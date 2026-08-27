@@ -1,0 +1,184 @@
+name: Recovery Image Builder
+
+on:
+  push:
+    branches: ["Recovery-Image-Builder"]
+    paths:
+      - "builder/REQUEST.env"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rotation: 0
+            degrees: 0deg
+            name: rot0-0deg
+          - rotation: 1
+            degrees: 90deg
+            name: rot1-90deg
+          - rotation: 2
+            degrees: 180deg
+            name: rot2-180deg
+          - rotation: 3
+            degrees: 270deg
+            name: rot3-270deg
+
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Read request
+        id: cfg
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f builder/REQUEST.env ] || { echo "builder/REQUEST.env not found" >&2; exit 1; }
+          set -a
+          source builder/REQUEST.env
+          set +a
+
+          : "${SOURCE_REF:?SOURCE_REF is required}"
+          : "${RECOVERY_URL:?RECOVERY_URL is required}"
+          : "${ARCHITECTURE:?ARCHITECTURE is required}"
+          : "${OUTPUT_PREFIX:=recovery-console}"
+          : "${SECLABEL:=u:r:recovery:s0}"
+
+          case "$ARCHITECTURE" in
+            aarch64) TRIPLE=aarch64-linux-musl ;;
+            armhf)   TRIPLE=arm-linux-musleabihf ;;
+            x86_64)  TRIPLE=x86_64-linux-musl ;;
+            x86)     TRIPLE=i686-linux-musl ;;
+            *) echo "Unsupported ARCHITECTURE=$ARCHITECTURE" >&2; exit 1 ;;
+          esac
+
+          for pair in \
+            "source_ref=$SOURCE_REF" \
+            "recovery_url=$RECOVERY_URL" \
+            "architecture=$ARCHITECTURE" \
+            "triple=$TRIPLE" \
+            "output_prefix=$OUTPUT_PREFIX" \
+            "seclabel=$SECLABEL"; do
+            echo "$pair" >> "$GITHUB_OUTPUT"
+          done
+
+          echo "Source ref   : $SOURCE_REF"
+          echo "Architecture : $ARCHITECTURE"
+          echo "Recovery URL : $RECOVERY_URL"
+          echo "Rotation     : ${{ matrix.rotation }} (${{ matrix.degrees }})"
+
+      - name: Checkout device source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.cfg.outputs.source_ref }}
+          path: console-src
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget unzip jq cpio file xxd xz-utils lz4
+
+      - name: Download target toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          TRIPLE='${{ steps.cfg.outputs.triple }}'
+          mkdir -p "$HOME/toolchains"
+          cd "$HOME/toolchains"
+          URL="https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers/${TRIPLE}-cross.tar.gz"
+          curl -fL --retry 3 --retry-delay 2 -o toolchain.tar.gz "$URL"
+          tar -xzf toolchain.tar.gz
+          test -x "$HOME/toolchains/${TRIPLE}-cross/bin/${TRIPLE}-gcc"
+
+      - name: Patch requested rotation
+        run: |
+          python3 builder/set-rotation.py console-src/include/config.h '${{ matrix.rotation }}'
+          grep -E '^#define[[:space:]]+ROTATION[[:space:]]+' console-src/include/config.h
+
+      - name: Build FreeType
+        run: |
+          chmod +x builder/build-freetype.sh
+          builder/build-freetype.sh '${{ steps.cfg.outputs.triple }}' "$GITHUB_WORKSPACE/console-src"
+
+      - name: Build Recovery Console
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd console-src
+          make clean
+          make '${{ steps.cfg.outputs.architecture }}' V=1
+          BIN="output/recovery-console-${{ steps.cfg.outputs.architecture }}"
+          test -s "$BIN"
+          chmod 0755 "$BIN"
+          file "$BIN"
+          sha256sum "$BIN"
+
+      - name: Download base recovery image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p input
+          curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 \
+            -o input/recovery.img '${{ steps.cfg.outputs.recovery_url }}'
+          test -s input/recovery.img
+          file input/recovery.img || true
+          sha256sum input/recovery.img
+
+      - name: Install magiskboot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          MAGISK_URL=$(curl -fsSL https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
+            | jq -r '.assets[] | select(.name | test("^Magisk-v.*\\.apk$")) | .browser_download_url' \
+            | head -n1)
+          [ -n "$MAGISK_URL" ] && [ "$MAGISK_URL" != "null" ]
+          curl -fL --retry 3 --retry-delay 2 -o tools/Magisk.apk "$MAGISK_URL"
+          unzip -p tools/Magisk.apk lib/x86_64/libmagiskboot.so > tools/magiskboot
+          chmod 0755 tools/magiskboot
+          test -x tools/magiskboot
+          tools/magiskboot --help >/dev/null 2>&1 || true
+
+      - name: Integrate Recovery Console into recovery image
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x builder/integrate-recovery.sh
+          mkdir -p dist
+          OUT="dist/${{ steps.cfg.outputs.output_prefix }}-${{ steps.cfg.outputs.architecture }}-${{ matrix.name }}.img"
+          builder/integrate-recovery.sh \
+            tools/magiskboot \
+            input/recovery.img \
+            "console-src/output/recovery-console-${{ steps.cfg.outputs.architecture }}" \
+            "$OUT" \
+            '${{ steps.cfg.outputs.seclabel }}'
+
+          cat > "dist/BUILD-INFO-${{ matrix.name }}.txt" <<EOF
+          Recovery Console source ref: ${{ steps.cfg.outputs.source_ref }}
+          Architecture: ${{ steps.cfg.outputs.architecture }}
+          ROTATION=${{ matrix.rotation }}
+          Orientation=${{ matrix.degrees }} clockwise
+          Base recovery URL: ${{ steps.cfg.outputs.recovery_url }}
+          Service autostart: disabled
+          SELinux seclabel: ${{ steps.cfg.outputs.seclabel }}
+          EOF
+
+          sha256sum "$OUT" > "$OUT.sha256"
+          ls -lh dist/
+
+      - name: Upload integrated recovery image
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.cfg.outputs.output_prefix }}-${{ steps.cfg.outputs.architecture }}-${{ matrix.name }}
+          path: |
+            dist/*.img
+            dist/*.sha256
+            dist/BUILD-INFO-*.txt
+          if-no-files-found: error
+          compression-level: 0
