@@ -10,42 +10,63 @@ For each request the workflow:
 1. Checks out the requested device source ref (`SOURCE_REF`).
 2. Builds the requested CPU architecture.
 3. Rebuilds it four times with `ROTATION=0,1,2,3`.
-4. Downloads the supplied base `recovery.img`.
-5. Downloads the current official Magisk APK and extracts the Linux x86_64 `magiskboot` binary.
-6. Unpacks the recovery image with `magiskboot`.
-7. Adds `recovery-console` to the ramdisk.
-8. Adds a disabled `recovery-console` init service.
-9. Re-packs the image while preserving the original boot-image structure handled by `magiskboot`.
-10. Re-opens the generated image and verifies that the binary and disabled init service exist.
-11. Uploads four integrated recovery images as GitHub Actions artifacts.
+4. Gets the base `recovery.img` from either a direct HTTPS URL or a file stored in this builder branch.
+5. Optionally verifies the base image SHA-256 before touching it.
+6. Downloads the official Magisk APK and extracts the Linux x86_64 `magiskboot` binary.
+7. Unpacks the recovery image with `magiskboot`.
+8. Adds `recovery-console` to the ramdisk.
+9. Adds a disabled `recovery-console` init service.
+10. Re-packs the image while preserving the boot-image structure handled by `magiskboot`.
+11. Re-opens the generated image and verifies that the binary and disabled init service exist.
+12. Uploads four integrated recovery images as GitHub Actions artifacts.
 
 The builder never adds an `on boot -> start recovery-console` rule. The normal recovery remains the default UI.
 
 ## Why this branch uses a push request file
 
-GitHub only dispatches `workflow_dispatch` events when the workflow exists on the repository default branch. We keep `main` identical to upstream, so this builder is triggered by pushes to a request file on `Recovery-Image-Builder` instead.
+GitHub only dispatches `workflow_dispatch` events when the workflow exists on the repository default branch. We keep `main` identical to upstream, so this builder is triggered by pushes to `builder/REQUEST.env` on `Recovery-Image-Builder` instead.
 
 ## How to run a build
 
-1. Put the base `recovery.img` at a direct HTTPS URL. A GitHub Release asset is recommended.
-2. Copy `builder/REQUEST.env.example` to `builder/REQUEST.env` on this branch.
-3. Edit the values.
-4. Commit/push `builder/REQUEST.env`.
-5. Open GitHub Actions and wait for `Recovery Image Builder`.
-6. Download the four artifacts.
+### Option A - recovery image inside the builder branch
 
-Example:
+1. Upload the base image as `builder/input/recovery.img` on `Recovery-Image-Builder`.
+2. Copy `builder/REQUEST.env.example` to `builder/REQUEST.env`.
+3. Use:
+
+```sh
+SOURCE_REF=Albus-Configs
+RECOVERY_URL=''
+RECOVERY_PATH='builder/input/recovery.img'
+RECOVERY_SHA256='optional-sha256-here'
+ARCHITECTURE=aarch64
+OUTPUT_PREFIX=albus-recovery-console
+SECLABEL='u:r:recovery:s0'
+MAGISK_APK_URL=''
+REQUEST_ID=1
+```
+
+4. Commit/push `builder/REQUEST.env`.
+
+### Option B - direct HTTPS recovery URL
+
+Use:
 
 ```sh
 SOURCE_REF=Albus-Configs
 RECOVERY_URL='https://github.com/USER/REPO/releases/download/base/recovery.img'
+RECOVERY_PATH=''
+RECOVERY_SHA256='optional-sha256-here'
 ARCHITECTURE=aarch64
 OUTPUT_PREFIX=albus-recovery-console
 SECLABEL='u:r:recovery:s0'
+MAGISK_APK_URL=''
 REQUEST_ID=1
 ```
 
-To rebuild the same configuration, increment `REQUEST_ID` and commit again.
+Use exactly one of `RECOVERY_URL` or `RECOVERY_PATH`.
+
+After pushing the request, open GitHub Actions and wait for `Recovery Image Builder`. To rebuild the exact same configuration, increment `REQUEST_ID` and commit again.
 
 ## Generated variants
 
@@ -62,7 +83,7 @@ Each artifact also contains a SHA-256 file and BUILD-INFO text.
 
 ## Injected init service
 
-The builder injects a service equivalent to:
+The builder normally injects a service equivalent to:
 
 ```rc
 service recovery-console /sbin/recovery-console
@@ -73,7 +94,7 @@ service recovery-console /sbin/recovery-console
     seclabel u:r:recovery:s0
 ```
 
-If `/sbin` is not already part of the ramdisk layout, the binary is installed as `/recovery-console` instead and the service path is adjusted automatically.
+If the recovery does not already use `/sbin/recovery`, the builder installs the binary as `/recovery-console` instead and adjusts the service path automatically.
 
 There is intentionally no autostart rule. After booting the generated recovery, start it with:
 
@@ -85,6 +106,12 @@ Then attach with the actual installed path, normally:
 
 ```sh
 adb shell /sbin/recovery-console --attach
+```
+
+or, when the builder selected the root path:
+
+```sh
+adb shell /recovery-console --attach
 ```
 
 ## Supported source profiles
@@ -107,6 +134,7 @@ The integration step fails instead of producing an image when:
 - the image has no ramdisk;
 - no supported recovery/init rc file can be found;
 - the Recovery Console binary is missing;
+- a supplied base-image SHA-256 does not match;
 - the output image is empty;
 - the generated image cannot be unpacked again;
 - the injected binary or disabled init service cannot be verified after repacking.
