@@ -11,13 +11,7 @@ no()      { printf '[NOT FOUND]   %-20s %s\n' "$1" "$2"; }
 auto()    { printf '[AUTO]        %-20s %s\n' "$1" "$2"; }
 manual()  { printf '[MANUAL]      %-20s %s\n' "$1" "$2"; }
 info()    { printf '[INFO]        %-20s %s\n' "$1" "$2"; }
-
-first_match() {
-    for p in "$@"; do
-        [ -e "$p" ] && { printf '%s\n' "$p"; return 0; }
-    done
-    return 1
-}
+summary() { printf '  %-22s : %s\n' "$1" "$2"; }
 
 first_exec() {
     for p in "$@"; do
@@ -48,6 +42,7 @@ if [ -n "$ARCH" ]; then
     ok 'Architecture' "$ARCH"
 else
     no 'Architecture' 'uname unavailable'
+    ARCH='<unknown>'
 fi
 
 # DRM/KMS device
@@ -74,19 +69,28 @@ fi
 
 # Effective display backend availability
 if [ -n "$DRM" ]; then
+    DISPLAY_BACKEND='DRM'
     ok 'Display backend' "DRM candidate available ($DRM)"
 elif [ -n "$FB" ]; then
+    DISPLAY_BACKEND='FBDEV'
     ok 'Display backend' "FBDEV candidate available ($FB)"
 else
+    DISPLAY_BACKEND='NONE'
     no 'Display backend' 'neither DRM nor FBDEV exists'
 fi
 
 # Framebuffer facts useful to the current implementation
+FBNAME=''
+VIRTUAL=''
+BPP=''
+STRIDE=''
+ROT=''
 if [ -d /sys/class/graphics/fb0 ]; then
     VIRTUAL=$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)
     BPP=$(cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null)
     STRIDE=$(cat /sys/class/graphics/fb0/stride 2>/dev/null)
     FBNAME=$(cat /sys/class/graphics/fb0/name 2>/dev/null)
+    ROT=$(cat /sys/class/graphics/fb0/rotate 2>/dev/null)
     [ -n "$FBNAME" ] && info 'FB name' "$FBNAME"
     [ -n "$VIRTUAL" ] && info 'FB virtual size' "$VIRTUAL"
     [ -n "$BPP" ] && info 'FB bits/pixel' "$BPP"
@@ -95,6 +99,8 @@ fi
 
 # Backlight path + usable brightness value
 BL=$(find_backlight)
+MAXBL=''
+CURBL=''
 if [ -n "$BL" ] && [ -e "$BL" ]; then
     ok 'BACKLIGHT_PATH' "$BL"
     BLDIR=${BL%/brightness}
@@ -109,19 +115,24 @@ fi
 
 # Shell used by --exec and recovery start/stop
 SHELL_PATH=$(first_exec /bin/sh /system/bin/sh /sbin/sh /vendor/bin/sh /system/xbin/sh)
+SHELL_DISPLAY=''
 if [ -n "$SHELL_PATH" ]; then
     TARGET=''
     command -v readlink >/dev/null 2>&1 && TARGET=$(readlink "$SHELL_PATH" 2>/dev/null)
     if [ -n "$TARGET" ]; then
-        ok 'DEFAULT_SHELL' "$SHELL_PATH -> $TARGET"
+        SHELL_DISPLAY="$SHELL_PATH -> $TARGET"
+        ok 'DEFAULT_SHELL' "$SHELL_DISPLAY"
     else
-        ok 'DEFAULT_SHELL' "$SHELL_PATH"
+        SHELL_DISPLAY="$SHELL_PATH"
+        ok 'DEFAULT_SHELL' "$SHELL_DISPLAY"
     fi
 else
+    SHELL_DISPLAY='<not found>'
     no 'DEFAULT_SHELL' 'no known executable sh path'
 fi
 
 # Recovery service used by current stop/start behavior
+REC=''
 if command -v getprop >/dev/null 2>&1; then
     REC=$(getprop init.svc.recovery 2>/dev/null)
     if [ -n "$REC" ]; then
@@ -142,8 +153,6 @@ auto 'DRM resolution' 'current code uses preferred connected mode'
 
 # Device-specific values documented as requiring customization and not safely
 # inferable from mere node existence.
-ROT=''
-[ -r /sys/class/graphics/fb0/rotate ] && ROT=$(cat /sys/class/graphics/fb0/rotate 2>/dev/null)
 if [ -n "$ROT" ]; then
     info 'Rotation hint' "kernel reports $ROT (still needs visual validation)"
 else
@@ -162,4 +171,28 @@ else
 fi
 [ -n "$BL" ] && printf '%s\n' '[RESULT] Backlight:      AVAILABLE' || printf '%s\n' '[RESULT] Backlight:      MISSING'
 [ -n "$SHELL_PATH" ] && printf '%s\n' '[RESULT] Shell:          AVAILABLE' || printf '%s\n' '[RESULT] Shell:          MISSING'
+
+printf '%s\n' '============================================================'
+printf '%s\n' ' FINAL SUMMARY - VALUES FOUND FOR THIS DEVICE'
+printf '%s\n' '============================================================'
+summary 'ARCH' "$ARCH"
+summary 'DISPLAY_BACKEND' "$DISPLAY_BACKEND"
+summary 'DRM_DEVICE' "${DRM:-<not found>}"
+summary 'FB_DEVICE' "${FB:-<not found>}"
+summary 'FB_NAME' "${FBNAME:-<not reported>}"
+summary 'FB_VIRTUAL_SIZE' "${VIRTUAL:-<not reported>}"
+summary 'FB_BPP' "${BPP:-<not reported>}"
+summary 'FB_STRIDE' "${STRIDE:-<not reported>}"
+summary 'BACKLIGHT_PATH' "${BL:-<not found>}"
+summary 'BACKLIGHT_MAX' "${MAXBL:-<not reported>}"
+summary 'BACKLIGHT_CURRENT' "${CURBL:-<not reported>}"
+summary 'DEFAULT_SHELL' "$SHELL_DISPLAY"
+summary 'RECOVERY_SERVICE' "${REC:-<not found>}"
+summary 'ROTATION_HINT' "${ROT:-<not reported / manual>}"
+summary 'MARGINS' '<manual / visual validation>'
+summary 'COLOR_BGR' '<manual / pixel-format validation>'
+summary 'USE_SHADOW_BUFFER' '<manual / panel behavior>'
+summary 'USE_CRTC_BLANK' '<manual / panel behavior>'
+printf '%s\n' '============================================================'
+printf '%s\n' ' Read-only probe complete. No device settings were changed.'
 printf '%s\n' '============================================================'
