@@ -33,14 +33,14 @@ cpio -it < ramdisk.cpio > ramdisk.list 2>/dev/null || {
   exit 1
 }
 
-normalize_has() {
+find_entry() {
   local needle="$1"
-  grep -Eq "^(\./)?${needle}$" ramdisk.list
+  grep -E "^(\./)?${needle}$" ramdisk.list | head -n1 || true
 }
 
-# Prefer /sbin when this recovery already uses it. Otherwise install at root,
-# which avoids inventing a directory/symlink layout on modern recoveries.
-if normalize_has 'sbin/recovery' || normalize_has 'sbin'; then
+# Prefer /sbin only when this recovery actually uses /sbin/recovery.
+# Otherwise install at root instead of inventing a directory/symlink layout.
+if [ -n "$(find_entry 'sbin/recovery')" ]; then
   CONSOLE_ENTRY='sbin/recovery-console'
   CONSOLE_EXEC='/sbin/recovery-console'
 else
@@ -49,9 +49,12 @@ else
 fi
 
 RC_ENTRY=''
+RC_ARCHIVE_ENTRY=''
 for candidate in init.recovery.service.rc init.recovery.rc init.rc; do
-  if normalize_has "$candidate"; then
+  found=$(find_entry "$candidate")
+  if [ -n "$found" ]; then
     RC_ENTRY="$candidate"
+    RC_ARCHIVE_ENTRY="$found"
     break
   fi
 done
@@ -63,11 +66,11 @@ done
 mkdir extract
 (
   cd extract
-  cpio -idmu --quiet "$RC_ENTRY" < ../ramdisk.cpio
+  cpio -idmu --quiet "$RC_ARCHIVE_ENTRY" < ../ramdisk.cpio
 )
-RC_FILE="$WORK/extract/$RC_ENTRY"
-[ -f "$RC_FILE" ] || { echo "ERROR: failed to extract $RC_ENTRY" >&2; exit 1; }
-RC_MODE=$(stat -c '%a' "$RC_FILE")
+RC_FILE="$WORK/extract/${RC_ARCHIVE_ENTRY#./}"
+[ -f "$RC_FILE" ] || { echo "ERROR: failed to extract $RC_ARCHIVE_ENTRY" >&2; exit 1; }
+RC_MODE="0$(stat -c '%a' "$RC_FILE")"
 
 # Idempotent: remove an earlier builder block before appending a fresh one.
 python3 - "$RC_FILE" "$CONSOLE_EXEC" "$SECLABEL" <<'PY'
@@ -101,6 +104,7 @@ PY
 
 # Replace only the selected rc entry and add the console binary; leave the rest
 # of the original ramdisk untouched.
+"$MAGISKBOOT" cpio ramdisk.cpio "rm $RC_ARCHIVE_ENTRY" >/dev/null 2>&1 || true
 "$MAGISKBOOT" cpio ramdisk.cpio "rm $RC_ENTRY" >/dev/null 2>&1 || true
 "$MAGISKBOOT" cpio ramdisk.cpio "add $RC_MODE $RC_ENTRY $RC_FILE"
 "$MAGISKBOOT" cpio ramdisk.cpio "rm $CONSOLE_ENTRY" >/dev/null 2>&1 || true
@@ -118,11 +122,14 @@ VERIFY=$(mktemp -d)
   [ -s ramdisk.cpio ]
   cpio -it < ramdisk.cpio > list 2>/dev/null
   grep -Eq "^(\./)?${CONSOLE_ENTRY}$" list
+  verify_rc=$(grep -E "^(\./)?${RC_ENTRY}$" list | head -n1)
+  [ -n "$verify_rc" ]
   mkdir x
   cd x
-  cpio -idmu --quiet "$RC_ENTRY" < ../ramdisk.cpio
-  grep -q '^service recovery-console ' "$RC_ENTRY"
-  grep -q '^[[:space:]]*disabled[[:space:]]*$' "$RC_ENTRY"
+  cpio -idmu --quiet "$verify_rc" < ../ramdisk.cpio
+  verify_file="${verify_rc#./}"
+  grep -q '^service recovery-console ' "$verify_file"
+  grep -q '^[[:space:]]*disabled[[:space:]]*$' "$verify_file"
 )
 rm -rf "$VERIFY"
 
@@ -132,6 +139,7 @@ printf '%s\n' \
   "  output      : $OUT" \
   "  binary path : $CONSOLE_EXEC" \
   "  init rc     : /$RC_ENTRY" \
+  "  init mode   : $RC_MODE" \
   "  autostart   : NO (service is disabled)" \
   "  seclabel    : $SECLABEL"
 sha256sum "$OUT"
