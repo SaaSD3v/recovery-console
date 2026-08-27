@@ -45,10 +45,22 @@ jobs:
           set +a
 
           : "${SOURCE_REF:?SOURCE_REF is required}"
-          : "${RECOVERY_URL:?RECOVERY_URL is required}"
           : "${ARCHITECTURE:?ARCHITECTURE is required}"
           : "${OUTPUT_PREFIX:=recovery-console}"
           : "${SECLABEL:=u:r:recovery:s0}"
+          : "${RECOVERY_URL:=}"
+          : "${RECOVERY_PATH:=}"
+          : "${RECOVERY_SHA256:=}"
+          : "${MAGISK_APK_URL:=}"
+
+          if [ -z "$RECOVERY_URL" ] && [ -z "$RECOVERY_PATH" ]; then
+            echo "Either RECOVERY_URL or RECOVERY_PATH is required" >&2
+            exit 1
+          fi
+          if [ -n "$RECOVERY_URL" ] && [ -n "$RECOVERY_PATH" ]; then
+            echo "Use only one of RECOVERY_URL or RECOVERY_PATH" >&2
+            exit 1
+          fi
 
           case "$ARCHITECTURE" in
             aarch64) TRIPLE=aarch64-linux-musl ;;
@@ -58,19 +70,22 @@ jobs:
             *) echo "Unsupported ARCHITECTURE=$ARCHITECTURE" >&2; exit 1 ;;
           esac
 
-          for pair in \
-            "source_ref=$SOURCE_REF" \
-            "recovery_url=$RECOVERY_URL" \
-            "architecture=$ARCHITECTURE" \
-            "triple=$TRIPLE" \
-            "output_prefix=$OUTPUT_PREFIX" \
-            "seclabel=$SECLABEL"; do
-            echo "$pair" >> "$GITHUB_OUTPUT"
-          done
+          {
+            echo "source_ref=$SOURCE_REF"
+            echo "recovery_url=$RECOVERY_URL"
+            echo "recovery_path=$RECOVERY_PATH"
+            echo "recovery_sha256=$RECOVERY_SHA256"
+            echo "architecture=$ARCHITECTURE"
+            echo "triple=$TRIPLE"
+            echo "output_prefix=$OUTPUT_PREFIX"
+            echo "seclabel=$SECLABEL"
+            echo "magisk_apk_url=$MAGISK_APK_URL"
+          } >> "$GITHUB_OUTPUT"
 
           echo "Source ref   : $SOURCE_REF"
           echo "Architecture : $ARCHITECTURE"
-          echo "Recovery URL : $RECOVERY_URL"
+          echo "Recovery URL : ${RECOVERY_URL:-<not used>}"
+          echo "Recovery path: ${RECOVERY_PATH:-<not used>}"
           echo "Rotation     : ${{ matrix.rotation }} (${{ matrix.degrees }})"
 
       - name: Checkout device source
@@ -119,31 +134,50 @@ jobs:
           file "$BIN"
           sha256sum "$BIN"
 
-      - name: Download base recovery image
+      - name: Prepare base recovery image
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p input
-          curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 \
-            -o input/recovery.img '${{ steps.cfg.outputs.recovery_url }}'
+          URL='${{ steps.cfg.outputs.recovery_url }}'
+          PATH_IN='${{ steps.cfg.outputs.recovery_path }}'
+          EXPECTED='${{ steps.cfg.outputs.recovery_sha256 }}'
+
+          if [ -n "$URL" ]; then
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 \
+              -o input/recovery.img "$URL"
+          else
+            test -f "$PATH_IN"
+            cp "$PATH_IN" input/recovery.img
+          fi
+
           test -s input/recovery.img
           file input/recovery.img || true
-          sha256sum input/recovery.img
+          ACTUAL=$(sha256sum input/recovery.img | awk '{print $1}')
+          echo "Base recovery SHA-256: $ACTUAL"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "ERROR: base recovery SHA-256 mismatch" >&2
+            exit 1
+          fi
 
       - name: Install magiskboot
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p tools
-          MAGISK_URL=$(curl -fsSL https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
-            | jq -r '.assets[] | select(.name | test("^Magisk-v.*\\.apk$")) | .browser_download_url' \
-            | head -n1)
+          MAGISK_URL='${{ steps.cfg.outputs.magisk_apk_url }}'
+          if [ -z "$MAGISK_URL" ]; then
+            MAGISK_URL=$(curl -fsSL https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
+              | jq -r '.assets[] | select(.name | test("^Magisk-v.*\\.apk$")) | .browser_download_url' \
+              | head -n1)
+          fi
           [ -n "$MAGISK_URL" ] && [ "$MAGISK_URL" != "null" ]
+          echo "Magisk APK: $MAGISK_URL"
           curl -fL --retry 3 --retry-delay 2 -o tools/Magisk.apk "$MAGISK_URL"
           unzip -p tools/Magisk.apk lib/x86_64/libmagiskboot.so > tools/magiskboot
           chmod 0755 tools/magiskboot
           test -x tools/magiskboot
-          tools/magiskboot --help >/dev/null 2>&1 || true
+          test -s tools/magiskboot
 
       - name: Integrate Recovery Console into recovery image
         shell: bash
@@ -165,6 +199,7 @@ jobs:
           ROTATION=${{ matrix.rotation }}
           Orientation=${{ matrix.degrees }} clockwise
           Base recovery URL: ${{ steps.cfg.outputs.recovery_url }}
+          Base recovery path: ${{ steps.cfg.outputs.recovery_path }}
           Service autostart: disabled
           SELinux seclabel: ${{ steps.cfg.outputs.seclabel }}
           EOF
