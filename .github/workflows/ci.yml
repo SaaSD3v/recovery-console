@@ -3,7 +3,7 @@ run-name: ${{ github.event.head_commit.message || format('Release {0}', github.e
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "Albus-Configs" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -20,7 +20,7 @@ on:
 
 jobs:
   build:
-    name: Build Recovery Console
+    name: Build Recovery Console (Albus aarch64)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -28,53 +28,48 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y build-essential wget tree xxd
+        sudo apt install -y build-essential wget curl tree xxd
 
-    - name: Download Toolchains
+    - name: Download aarch64 Toolchain
       run: |
-        mkdir -p $HOME/toolchains
-        cd $HOME/toolchains
+        set -euxo pipefail
+        mkdir -p "$HOME/toolchains"
+        cd "$HOME/toolchains"
         BASE_URL="https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers"
+        wget --tries=3 --timeout=30 "$BASE_URL/aarch64-linux-musl-cross.tar.gz"
+        tar -xzf aarch64-linux-musl-cross.tar.gz
+        test -x "$HOME/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
+        "$HOME/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" --version
 
-        echo "[*] Downloading aarch64 toolchain..."
-        wget -q $BASE_URL/aarch64-linux-musl-cross.tar.gz
+    - name: Build FreeType (aarch64)
+      run: ./scripts/build-freetype.sh aarch64-linux-musl
 
-        echo "[*] Downloading armhf toolchain..."
-        wget -q $BASE_URL/arm-linux-musleabihf-cross.tar.gz
+    - name: Build Recovery Console (aarch64)
+      run: make aarch64 V=1
 
-        echo "[*] Downloading x86 toolchain..."
-        wget -q $BASE_URL/i686-linux-musl-cross.tar.gz
-
-        echo "[*] Downloading x86_64 toolchain..."
-        wget -q $BASE_URL/x86_64-linux-musl-cross.tar.gz
-
-        echo "[*] Extracting toolchains..."
-        for f in *.tar.gz; do
-          echo "Extracting $f..."
-          tar -xzf "$f"
-        done
-
-        echo "[+] Toolchains ready."
-        tree -L 3 $HOME/toolchains
-
-    - name: Build Dependencies
-      run: make build-deps
-
-    - name: Build All Tarball
-      run: make all-tarball
-
-    - name: Stage & Rename Artifacts
+    - name: Verify Binary
       run: |
-        TAR_NAME=$(ls recovery-console-v*-*.tar.gz)
-        mkdir -p dist
-        mv ${TAR_NAME} dist/
-        echo "TAR_FILE=dist/${TAR_NAME}" >> $GITHUB_ENV
+        set -euxo pipefail
+        test -s output/recovery-console-aarch64
+        file output/recovery-console-aarch64
+        sha256sum output/recovery-console-aarch64
 
-    - name: Upload Final Artifacts (Tarball)
+    - name: Package Albus Artifact
+      run: |
+        set -euxo pipefail
+        VERSION=$(grep -oP 'VERSION\s+"\K[^"]+' include/config.h)
+        TAR_NAME="recovery-console-${VERSION}-aarch64.tar.gz"
+        mkdir -p dist
+        tar -czf "dist/$TAR_NAME" -C output recovery-console-aarch64
+        echo "TAR_FILE=dist/$TAR_NAME" >> "$GITHUB_ENV"
+        ls -lh "dist/$TAR_NAME"
+
+    - name: Upload Final Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: recovery-console-artifacts
-        path: dist/
+        name: recovery-console-albus-aarch64
+        path: dist/*.tar.gz
+        if-no-files-found: error
 
   release:
     name: Create GitHub Release
@@ -103,13 +98,11 @@ jobs:
       run: |
         PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
         echo "Previous tag: $PREV_TAG"
-
         if [ -z "$PREV_TAG" ]; then
           CHANGELOG=$(git log --oneline --pretty=format:"* %s (%h)")
         else
           CHANGELOG=$(git log ${PREV_TAG}..HEAD --oneline --pretty=format:"* %s (%h)")
         fi
-
         {
           echo "notes<<EOF"
           echo "$CHANGELOG"
