@@ -16,7 +16,22 @@
 #define MARGIN_BOTTOM 30
 #define MARGIN_LEFT 10
 #define MARGIN_RIGHT 10
-#define ROTATION 0         /* 0=0deg, 1=90deg, 2=180deg, 3=270deg CW */
+
+/*
+ * Albus rotation test variants:
+ *   0 = 0 deg
+ *   1 = 90 deg clockwise
+ *   2 = 180 deg
+ *   3 = 270 deg clockwise
+ *
+ * CI builds all four variants by replacing ALBUS_ROTATION per isolated job.
+ * Keep 0 as the local/default build when no CI variant is selected.
+ */
+#ifndef ALBUS_ROTATION
+#define ALBUS_ROTATION 0
+#endif
+#define ROTATION ALBUS_ROTATION
+
 #define DISPLAY_TIMEOUT 60 /* seconds of inactivity before sleep */
 
 /* VGA palette defaults (indices into 256-color palette) */
