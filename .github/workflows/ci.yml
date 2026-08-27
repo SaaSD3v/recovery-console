@@ -20,10 +20,30 @@ on:
 
 jobs:
   build:
-    name: Build Recovery Console (Albus aarch64)
+    name: Albus aarch64 - rot${{ matrix.rotation }} (${{ matrix.degrees }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rotation: 0
+            degrees: 0deg
+          - rotation: 1
+            degrees: 90deg
+          - rotation: 2
+            degrees: 180deg
+          - rotation: 3
+            degrees: 270deg
+
     steps:
     - uses: actions/checkout@v4
+
+    - name: Select Albus Rotation
+      run: |
+        set -euxo pipefail
+        sed -i "s/^#define ALBUS_ROTATION 0$/#define ALBUS_ROTATION ${{ matrix.rotation }}/" include/config.h
+        grep -E '^#define (ALBUS_ROTATION|ROTATION)' include/config.h
+        echo "Building Albus ROTATION=${{ matrix.rotation }} (${{ matrix.degrees }})"
 
     - name: Install dependencies
       run: |
@@ -44,7 +64,7 @@ jobs:
     - name: Build FreeType (aarch64)
       run: ./scripts/build-freetype.sh aarch64-linux-musl
 
-    - name: Build Recovery Console (aarch64)
+    - name: Build Recovery Console (aarch64, rot${{ matrix.rotation }})
       run: make aarch64 V=1
 
     - name: Verify Binary
@@ -53,21 +73,32 @@ jobs:
         test -s output/recovery-console-aarch64
         file output/recovery-console-aarch64
         sha256sum output/recovery-console-aarch64
+        grep -q "#define ALBUS_ROTATION ${{ matrix.rotation }}" include/config.h
 
-    - name: Package Albus Artifact
+    - name: Package Albus Rotation Artifact
       run: |
         set -euxo pipefail
         VERSION=$(grep -oP 'VERSION\s+"\K[^"]+' include/config.h)
-        TAR_NAME="recovery-console-${VERSION}-aarch64.tar.gz"
-        mkdir -p dist
-        tar -czf "dist/$TAR_NAME" -C output recovery-console-aarch64
+        ROT="rot${{ matrix.rotation }}-${{ matrix.degrees }}"
+        BIN_NAME="recovery-console-albus-aarch64-${ROT}"
+        TAR_NAME="recovery-console-${VERSION}-aarch64-${ROT}.tar.gz"
+        mkdir -p dist package
+        cp output/recovery-console-aarch64 "package/$BIN_NAME"
+        printf '%s\n' \
+          "Device: Moto Z2 Play (albus)" \
+          "Architecture: aarch64" \
+          "ROTATION=${{ matrix.rotation }}" \
+          "Orientation=${{ matrix.degrees }} clockwise" \
+          > "package/BUILD-INFO.txt"
+        tar -czf "dist/$TAR_NAME" -C package "$BIN_NAME" BUILD-INFO.txt
         echo "TAR_FILE=dist/$TAR_NAME" >> "$GITHUB_ENV"
         ls -lh "dist/$TAR_NAME"
+        tar -tzf "dist/$TAR_NAME"
 
-    - name: Upload Final Artifact
+    - name: Upload Rotation Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: recovery-console-albus-aarch64
+        name: recovery-console-albus-aarch64-rot${{ matrix.rotation }}-${{ matrix.degrees }}
         path: dist/*.tar.gz
         if-no-files-found: error
 
@@ -118,6 +149,12 @@ jobs:
         body: |
           ## What's Changed
           ${{ steps.changelog.outputs.notes }}
+
+          ## Albus rotation variants
+          - rot0 = 0 degrees
+          - rot1 = 90 degrees clockwise
+          - rot2 = 180 degrees
+          - rot3 = 270 degrees clockwise
 
           ---
           **Automated Release by Recovery Console CI**
