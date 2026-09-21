@@ -21,7 +21,6 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/zip"
 unzip -q "$BASE_ZIP" -d "$WORK/zip"
-
 cd "$WORK/zip"
 
 RAMDISK=""
@@ -31,73 +30,40 @@ for candidate in ramdisk-twrp.cpio ramdisk-recovery.cpio; do
     break
   fi
 done
-[ -n "$RAMDISK" ] || {
-  echo "ERROR: TWRP installer contains neither ramdisk-twrp.cpio nor ramdisk-recovery.cpio" >&2
-  exit 1
-}
+[ -n "$RAMDISK" ] || { echo "ERROR: TWRP installer ramdisk not found" >&2; exit 1; }
+[ -f META-INF/com/google/android/update-binary ] || { echo "ERROR: native TWRP update-binary missing" >&2; exit 1; }
+[ -f magiskboot ] || { echo "ERROR: native TWRP magiskboot missing" >&2; exit 1; }
 
-[ -f META-INF/com/google/android/update-binary ] || {
-  echo "ERROR: installer update-binary missing" >&2
-  exit 1
-}
-[ -f magiskboot ] || {
-  echo "ERROR: installer magiskboot missing" >&2
-  exit 1
-}
-
-# The official Channel installer stores its recovery ramdisk compressed.
-# Work on an uncompressed CPIO, then restore the original compression format.
-RAW_RAMDISK="$WORK/ramdisk.raw.cpio"
+RAW="$WORK/ramdisk.raw.cpio"
 COMPRESSION="raw"
-
-if cpio -it < "$RAMDISK" > "$WORK/ramdisk.list" 2>/dev/null; then
-  cp -f "$RAMDISK" "$RAW_RAMDISK"
+if cpio -it < "$RAMDISK" >/dev/null 2>&1; then
+  cp -f "$RAMDISK" "$RAW"
 else
   DESC=$(file -b "$RAMDISK" || true)
   MAGIC=$(xxd -p -l 8 "$RAMDISK" 2>/dev/null | tr -d '\n')
-
   case "$MAGIC" in
-    1f8b*)         COMPRESSION="gzip" ;;
-    04224d18*)     COMPRESSION="lz4" ;;
-    02214c18*)     COMPRESSION="lz4_legacy" ;;
-    fd377a585a00*) COMPRESSION="xz" ;;
-    425a68*)       COMPRESSION="bzip2" ;;
+    1f8b*) COMPRESSION=gzip ;;
+    04224d18*) COMPRESSION=lz4 ;;
+    02214c18*) COMPRESSION=lz4_legacy ;;
+    fd377a585a00*) COMPRESSION=xz ;;
+    425a68*) COMPRESSION=bzip2 ;;
     *)
       case "$DESC" in
-        *gzip*)  COMPRESSION="gzip" ;;
-        *XZ*)    COMPRESSION="xz" ;;
-        *LZMA*)  COMPRESSION="lzma" ;;
-        *bzip2*) COMPRESSION="bzip2" ;;
-        *LZ4*)   COMPRESSION="lz4" ;;
-        *)
-          echo "ERROR: unsupported ramdisk compression: $DESC (magic=$MAGIC)" >&2
-          exit 1
-          ;;
+        *gzip*) COMPRESSION=gzip ;;
+        *XZ*) COMPRESSION=xz ;;
+        *LZMA*) COMPRESSION=lzma ;;
+        *bzip2*) COMPRESSION=bzip2 ;;
+        *LZ4*) COMPRESSION=lz4 ;;
+        *) echo "ERROR: unsupported ramdisk compression: $DESC" >&2; exit 1 ;;
       esac
       ;;
   esac
-
-  echo "Ramdisk compression: $COMPRESSION ($DESC)"
-  "$MAGISKBOOT" decompress "$RAMDISK" "$RAW_RAMDISK"
-  [ -s "$RAW_RAMDISK" ] || {
-    echo "ERROR: magiskboot did not produce a decompressed ramdisk" >&2
-    exit 1
-  }
-
-  cpio -it < "$RAW_RAMDISK" > "$WORK/ramdisk.list" 2>/dev/null || {
-    echo "ERROR: decompressed $RAMDISK is not a valid CPIO archive" >&2
-    exit 1
-  }
+  "$MAGISKBOOT" decompress "$RAMDISK" "$RAW"
 fi
+[ -s "$RAW" ] || { echo "ERROR: failed to obtain raw ramdisk CPIO" >&2; exit 1; }
+cpio -it < "$RAW" > "$WORK/ramdisk.list" 2>/dev/null
 
-find_entry() {
-  local needle="$1"
-  grep -E "^(\./)?${needle}$" "$WORK/ramdisk.list" | head -n1 || true
-}
-
-# Channel TWRP normally contains /sbin/recovery. Keep the same placement
-# strategy as the generic builder, but fail cleanly if the layout differs.
-if [ -n "$(find_entry 'sbin/recovery')" ]; then
+if grep -Eq '^(\./)?sbin/recovery$' "$WORK/ramdisk.list"; then
   CONSOLE_ENTRY='sbin/recovery-console'
   CONSOLE_EXEC='/sbin/recovery-console'
 else
@@ -105,48 +71,81 @@ else
   CONSOLE_EXEC='/recovery-console'
 fi
 
-RC_ENTRY=''
-RC_ARCHIVE_ENTRY=''
-for candidate in init.recovery.service.rc init.recovery.rc init.rc; do
-  found=$(find_entry "$candidate")
-  if [ -n "$found" ]; then
-    RC_ENTRY="$candidate"
-    RC_ARCHIVE_ENTRY="$found"
-    break
-  fi
-done
-[ -n "$RC_ENTRY" ] || {
-  echo "ERROR: no supported init rc file found in TWRP ramdisk" >&2
-  exit 1
-}
-
-mkdir -p "$WORK/extract"
+PATCH="$WORK/patch"
+VERIFY="$WORK/verify"
+mkdir -p "$PATCH" "$VERIFY"
 (
-  cd "$WORK/extract"
-  cpio -idmu --quiet "$RC_ARCHIVE_ENTRY" < "$RAW_RAMDISK"
+  cd "$PATCH"
+  "$MAGISKBOOT" cpio "$RAW" "extract"
 )
-RC_FILE="$WORK/extract/${RC_ARCHIVE_ENTRY#./}"
-[ -f "$RC_FILE" ] || { echo "ERROR: failed to extract $RC_ARCHIVE_ENTRY" >&2; exit 1; }
-RC_MODE="0$(stat -c '%a' "$RC_FILE")"
 
-python3 - "$RC_FILE" "$CONSOLE_EXEC" "$SECLABEL" <<'PY'
+python3 - "$PATCH" "$CONSOLE_EXEC" "$SECLABEL" <<'PY'
 from pathlib import Path
+import re
 import sys
 
-path = Path(sys.argv[1])
+root = Path(sys.argv[1])
 exe = sys.argv[2]
 seclabel = sys.argv[3]
-text = path.read_text(errors="surrogateescape")
-start = "# BEGIN RECOVERY-CONSOLE-CHANNEL"
-end = "# END RECOVERY-CONSOLE-CHANNEL"
+service_re = re.compile(r'^service[ \t]+recovery[ \t]+\S+.*$')
+markers = [
+    ("# BEGIN RECOVERY-CONSOLE-CHANNEL", "# END RECOVERY-CONSOLE-CHANNEL"),
+    ("# BEGIN RECOVERY-CONSOLE-BUILDER", "# END RECOVERY-CONSOLE-BUILDER"),
+    ("# BEGIN RECOVERY-CONSOLE-PERMANENT", "# END RECOVERY-CONSOLE-PERMANENT"),
+]
 
-while start in text and end in text:
-    a = text.index(start)
-    b = text.index(end, a) + len(end)
-    text = text[:a].rstrip() + "\n" + text[b:].lstrip("\n")
+modified = []
+stock_hosts = []
 
+def strip_marked(text: str) -> str:
+    for start, end in markers:
+        while start in text and end in text:
+            a = text.index(start)
+            b = text.index(end, a) + len(end)
+            text = text[:a].rstrip() + "\n" + text[b:].lstrip("\n")
+    return text
+
+for path in sorted(root.rglob("*.rc")):
+    try:
+        text = path.read_text(errors="surrogateescape")
+    except OSError:
+        continue
+    original = text
+    text = strip_marked(text)
+    lines = text.splitlines()
+    changed = text != original
+    i = 0
+    while i < len(lines):
+        if not service_re.match(lines[i]):
+            i += 1
+            continue
+        stock_hosts.append(path)
+        j = i + 1
+        while j < len(lines):
+            line = lines[j]
+            if line and not line[0].isspace() and not line.lstrip().startswith("#"):
+                break
+            j += 1
+        block = lines[i:j]
+        if not any(x.strip() == "disabled" for x in block):
+            lines.insert(j, "    disabled")
+            changed = True
+            j += 1
+        i = j
+    new_text = "\n".join(lines)
+    if text.endswith("\n") or new_text:
+        new_text += "\n"
+    if changed:
+        path.write_text(new_text, errors="surrogateescape")
+        modified.append(path)
+
+if not stock_hosts:
+    raise SystemExit("no stock Android init service named recovery was found")
+
+host = stock_hosts[0]
+text = host.read_text(errors="surrogateescape")
 block = [
-    start,
+    "# BEGIN RECOVERY-CONSOLE-PERMANENT",
     f"service recovery-console {exe}",
     "    user root",
     "    group root",
@@ -155,79 +154,130 @@ block = [
 ]
 if seclabel and seclabel.lower() != "none":
     block.append(f"    seclabel {seclabel}")
-block.append(end)
-
-path.write_text(text.rstrip() + "\n\n" + "\n".join(block) + "\n",
+block += [
+    "",
+    "on boot",
+    "    start recovery-console",
+    "# END RECOVERY-CONSOLE-PERMANENT",
+]
+host.write_text(text.rstrip() + "\n\n" + "\n".join(block) + "\n",
                 errors="surrogateescape")
+if host not in modified:
+    modified.append(host)
+
+manifest = root / ".recovery-console-modified-rc"
+manifest.write_text("\n".join(str(p.relative_to(root)) for p in modified) + "\n")
 PY
 
-"$MAGISKBOOT" cpio "$RAW_RAMDISK" "rm $RC_ARCHIVE_ENTRY" >/dev/null 2>&1 || true
-"$MAGISKBOOT" cpio "$RAW_RAMDISK" "rm $RC_ENTRY" >/dev/null 2>&1 || true
-"$MAGISKBOOT" cpio "$RAW_RAMDISK" "add $RC_MODE $RC_ENTRY $RC_FILE"
-"$MAGISKBOOT" cpio "$RAW_RAMDISK" "rm $CONSOLE_ENTRY" >/dev/null 2>&1 || true
-"$MAGISKBOOT" cpio "$RAW_RAMDISK" "add 0755 $CONSOLE_ENTRY $BIN"
+[ -s "$PATCH/.recovery-console-modified-rc" ] || { echo "ERROR: no init rc file changed" >&2; exit 1; }
 
-# Verify the modified raw CPIO before recompressing it.
-cpio -it < "$RAW_RAMDISK" > "$WORK/verify.list" 2>/dev/null
-grep -Eq "^(\./)?${CONSOLE_ENTRY}$" "$WORK/verify.list"
-VERIFY_RC=$(grep -E "^(\./)?${RC_ENTRY}$" "$WORK/verify.list" | head -n1)
-[ -n "$VERIFY_RC" ]
+while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  mode="0$(stat -c '%a' "$PATCH/$rel")"
+  "$MAGISKBOOT" cpio "$RAW" "rm $rel" >/dev/null 2>&1 || true
+  "$MAGISKBOOT" cpio "$RAW" "add $mode $rel $PATCH/$rel"
+done < "$PATCH/.recovery-console-modified-rc"
 
-mkdir -p "$WORK/verify"
+"$MAGISKBOOT" cpio "$RAW" "rm $CONSOLE_ENTRY" >/dev/null 2>&1 || true
+"$MAGISKBOOT" cpio "$RAW" "add 0755 $CONSOLE_ENTRY $BIN"
+
 (
-  cd "$WORK/verify"
-  cpio -idmu --quiet "$VERIFY_RC" < "$RAW_RAMDISK"
+  cd "$VERIFY"
+  "$MAGISKBOOT" cpio "$RAW" "extract"
 )
-VERIFY_FILE="$WORK/verify/${VERIFY_RC#./}"
-grep -q '^service recovery-console ' "$VERIFY_FILE"
-grep -q '^[[:space:]]*disabled[[:space:]]*$' "$VERIFY_FILE"
 
-# Restore the exact compression family expected by the native TWRP installer.
-if [ "$COMPRESSION" = "raw" ]; then
-  cp -f "$RAW_RAMDISK" "$RAMDISK"
+test -x "$VERIFY/$CONSOLE_ENTRY"
+cmp -s "$BIN" "$VERIFY/$CONSOLE_ENTRY"
+
+python3 - "$VERIFY" "$CONSOLE_EXEC" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+exe = sys.argv[2]
+service_re = re.compile(r'^service[ \t]+recovery[ \t]+\S+.*$')
+stock = 0
+console = 0
+autostart = 0
+
+for path in root.rglob("*.rc"):
+    try:
+        lines = path.read_text(errors="surrogateescape").splitlines()
+    except OSError:
+        continue
+
+    for i, line in enumerate(lines):
+        if service_re.match(line):
+            stock += 1
+            j = i + 1
+            block = []
+            while j < len(lines):
+                nxt = lines[j]
+                if nxt and not nxt[0].isspace() and not nxt.lstrip().startswith("#"):
+                    break
+                block.append(nxt)
+                j += 1
+            if not any(x.strip() == "disabled" for x in block):
+                raise SystemExit(f"{path}: stock recovery service is not disabled")
+
+        if line.strip() == f"service recovery-console {exe}":
+            console += 1
+            j = i + 1
+            block = []
+            while j < len(lines):
+                nxt = lines[j]
+                if nxt and not nxt[0].isspace() and not nxt.lstrip().startswith("#"):
+                    break
+                block.append(nxt)
+                j += 1
+            if not any(x.strip() == "disabled" for x in block):
+                raise SystemExit(f"{path}: recovery-console service is not disabled")
+
+    text = "\n".join(lines)
+    if re.search(r'(?m)^on boot\s*$[\s\S]*?^[ \t]+start recovery-console\s*$', text):
+        autostart += 1
+
+if stock == 0:
+    raise SystemExit("stock recovery service missing during verification")
+if console != 1:
+    raise SystemExit(f"expected exactly one recovery-console service, found {console}")
+if autostart == 0:
+    raise SystemExit("on boot -> start recovery-console is missing")
+PY
+
+if [ "$COMPRESSION" = raw ]; then
+  cp -f "$RAW" "$RAMDISK"
 else
   rm -f "$RAMDISK"
-  "$MAGISKBOOT" "compress=$COMPRESSION" "$RAW_RAMDISK" "$RAMDISK"
-  [ -s "$RAMDISK" ] || {
-    echo "ERROR: failed to recompress ramdisk as $COMPRESSION" >&2
-    exit 1
-  }
+  "$MAGISKBOOT" "compress=$COMPRESSION" "$RAW" "$RAMDISK"
 fi
+[ -s "$RAMDISK" ] || { echo "ERROR: final ramdisk missing" >&2; exit 1; }
 
-# Re-open the final ramdisk after compression and prove our changes survived.
-FINAL_RAW="$WORK/final-verify.cpio"
-if [ "$COMPRESSION" = "raw" ]; then
-  cp -f "$RAMDISK" "$FINAL_RAW"
+ROUNDTRIP="$WORK/roundtrip.cpio"
+if [ "$COMPRESSION" = raw ]; then
+  cp -f "$RAMDISK" "$ROUNDTRIP"
 else
-  "$MAGISKBOOT" decompress "$RAMDISK" "$FINAL_RAW"
+  "$MAGISKBOOT" decompress "$RAMDISK" "$ROUNDTRIP"
 fi
-cpio -it < "$FINAL_RAW" > "$WORK/final.list" 2>/dev/null
-grep -Eq "^(\./)?${CONSOLE_ENTRY}$" "$WORK/final.list"
-grep -Eq "^(\./)?${RC_ENTRY}$" "$WORK/final.list"
+cmp -s "$RAW" "$ROUNDTRIP" || { echo "ERROR: ramdisk compression round-trip changed payload" >&2; exit 1; }
 
-# Preserve executable installer helpers before rebuilding the ZIP.
 chmod 0755 META-INF/com/google/android/update-binary magiskboot 2>/dev/null || true
-
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
 zip -q -r -9 "$OUT" .
-[ -s "$OUT" ] || { echo "ERROR: output zip was not created" >&2; exit 1; }
-
-# Re-open output and verify installer + modified ramdisk are present.
 unzip -t "$OUT" >/dev/null
-unzip -Z1 "$OUT" | grep -q '^META-INF/com/google/android/update-binary$'
-unzip -Z1 "$OUT" | grep -q "^${RAMDISK}$"
 
 printf '%s\n' \
-  "Integrated Recovery Console into Channel TWRP installer" \
-  "  base zip     : $BASE_ZIP" \
-  "  output zip   : $OUT" \
-  "  ramdisk      : $RAMDISK" \
-  "  compression  : $COMPRESSION" \
-  "  binary path  : $CONSOLE_EXEC" \
-  "  init rc      : /$RC_ENTRY" \
-  "  autostart    : NO (service is disabled)" \
-  "  install mode : recovery-as-boot (official Channel update-binary patches boot_a + boot_b)" \
-  "  seclabel     : $SECLABEL"
+  "Integrated Recovery Console permanently into Channel TWRP installer" \
+  "  base zip       : $BASE_ZIP" \
+  "  output zip     : $OUT" \
+  "  ramdisk        : $RAMDISK" \
+  "  compression    : $COMPRESSION" \
+  "  console path   : $CONSOLE_EXEC" \
+  "  stock recovery : disabled" \
+  "  console boot   : automatic (on boot)" \
+  "  fallback       : explicit 'start recovery' remains possible" \
+  "  installer      : native Channel TWRP update-binary preserved"
 
 sha256sum "$OUT"
