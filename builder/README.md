@@ -13,10 +13,10 @@ The repository default branch contains the **Channel TWRP + Recovery Console** w
 Inputs:
 
 - `orientation=all` builds 0, 90, 180 and 270 degrees.
-- `portrait-0deg` builds rotation 0 only.
-- `landscape-90deg` builds rotation 1 only.
-- `portrait-180deg` builds rotation 2 only.
-- `landscape-270deg` builds rotation 3 only.
+- `portrait-0` builds rotation 0 only.
+- `landscape-90` builds rotation 1 only.
+- `portrait-180` builds rotation 2 only.
+- `landscape-270` builds rotation 3 only.
 - `twrp_version` selects an official Channel installer version.
 - `publish_release` optionally publishes the final installer ZIP(s) in a GitHub Release; Actions artifacts are always uploaded.
 
@@ -31,7 +31,7 @@ For each rotation (0/90/180/270 degrees) the workflow:
 3. Downloads or reads a Channel TWRP installer ZIP.
 4. Locates `ramdisk-twrp.cpio` or `ramdisk-recovery.cpio` inside the ZIP.
 5. Injects `recovery-console` into that ramdisk.
-6. Disables the stock `service recovery`, adds `service recovery-console`, and wires `on boot -> start recovery-console`.
+6. Follows the upstream README permanent method exactly: adds `disabled` to the original stock `service recovery`, installs the console at `/system/bin/recovery-console`, and writes the console service plus `on boot -> start recovery-console` into the ramdisk root `/init.rc`.
 7. Rebuilds the TWRP installer ZIP without changing its recovery-as-boot installer logic.
 8. Extracts the resulting modified ramdisk as a separate artifact for inspection.
 9. Uploads the modified installer ZIP, ramdisk CPIO, SHA-256 and build information.
@@ -114,7 +114,9 @@ ADB attach:
 /system/bin/recovery-console --attach
 ```
 
-The Channel profile also uses the upstream lifecycle code unchanged and the verified `/bin/sh` shell path.
+The Channel profile uses the upstream `main.c` unchanged. Its ramdisk exposes `/bin -> /system/bin`, so the upstream `/bin/sh` lifecycle commands work without a device-specific source patch.
+
+The tested TWRP 3.5.2_10-0 ramdisk already forces SELinux permissive in `early-init` with `write /sys/fs/selinux/enforce 0`, satisfying the upstream SELinux requirement without an extra policy rewrite.
 
 ## Why the output is primarily a ZIP, not recovery.img
 
