@@ -333,17 +333,4 @@ rm -f "$OUT"
 zip -q -r -9 "$OUT" .
 unzip -t "$OUT" >/dev/null
 
-printf '%s\n' \
-  "Integrated Recovery Console permanently into Channel TWRP installer" \
-  "  base zip       : $BASE_ZIP" \
-  "  output zip     : $OUT" \
-  "  ramdisk        : $RAMDISK" \
-  "  compression    : $COMPRESSION" \
-  "  console path   : $CONSOLE_EXEC" \
-  "  stock recovery : disabled" \
-  "  console boot   : automatic (on boot)" \
-  "  integration    : upstream README permanent init.rc method" \
-  "  fallback       : upstream cleanup may explicitly 'start recovery' on exit" \
-  "  installer      : native Channel TWRP update-binary preserved"
-
-sha256sum "$OUT"
+printf '%s\
