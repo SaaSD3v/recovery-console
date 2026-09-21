@@ -171,15 +171,26 @@ PY
 
 [ -s "$PATCH/.recovery-console-modified-rc" ] || { echo "ERROR: no init rc file changed" >&2; exit 1; }
 
+CPIO_CMDS=()
+if [ ! -d "$PATCH/system" ]; then
+  CPIO_CMDS+=("mkdir 0755 system")
+fi
+if [ ! -d "$PATCH/system/bin" ]; then
+  CPIO_CMDS+=("mkdir 0755 system/bin")
+fi
+
 while IFS= read -r rel; do
   [ -n "$rel" ] || continue
   mode="0$(stat -c '%a' "$PATCH/$rel")"
-  "$MAGISKBOOT" cpio "$RAW" "rm $rel" >/dev/null 2>&1 || true
-  "$MAGISKBOOT" cpio "$RAW" "add $mode $rel $PATCH/$rel"
+  CPIO_CMDS+=("rm $rel")
+  CPIO_CMDS+=("add $mode $rel $PATCH/$rel")
 done < "$PATCH/.recovery-console-modified-rc"
 
-"$MAGISKBOOT" cpio "$RAW" "rm $CONSOLE_ENTRY" >/dev/null 2>&1 || true
-"$MAGISKBOOT" cpio "$RAW" "add 0755 $CONSOLE_ENTRY $BIN"
+CPIO_CMDS+=("rm recovery-console")
+CPIO_CMDS+=("rm sbin/recovery-console")
+CPIO_CMDS+=("rm $CONSOLE_ENTRY")
+CPIO_CMDS+=("add 0755 $CONSOLE_ENTRY $BIN")
+"$MAGISKBOOT" cpio "$RAW" "${CPIO_CMDS[@]}"
 
 (
   cd "$VERIFY"
@@ -188,6 +199,8 @@ done < "$PATCH/.recovery-console-modified-rc"
 
 test -x "$VERIFY/$CONSOLE_ENTRY"
 cmp -s "$BIN" "$VERIFY/$CONSOLE_ENTRY"
+test ! -e "$VERIFY/recovery-console"
+test ! -e "$VERIFY/sbin/recovery-console"
 
 python3 - "$VERIFY" "$CONSOLE_EXEC" <<'PY'
 from pathlib import Path
@@ -277,7 +290,8 @@ printf '%s\n' \
   "  console path   : $CONSOLE_EXEC" \
   "  stock recovery : disabled" \
   "  console boot   : automatic (on boot)" \
-  "  fallback       : explicit 'start recovery' remains possible" \
+  "  integration    : upstream README permanent init.rc method" \
+  "  fallback       : upstream cleanup may explicitly 'start recovery' on exit" \
   "  installer      : native Channel TWRP update-binary preserved"
 
 sha256sum "$OUT"
