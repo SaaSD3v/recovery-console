@@ -53,3 +53,7 @@ The Albus builder also uses the documented **Permanent Integration** mode:
 - explicit `start recovery` remains available as the fallback to TWRP.
 
 The integrator preserves the known-good legacy Albus image layout with `magiskboot unpack -n` / `repack -n`, preserves the detected LZMA ramdisk compression, and the workflow rejects any output whose kernel or DT differs from the known-good base.
+
+## Albus shell exception
+
+The permanent init integration itself follows the upstream README path and service layout exactly (`/system/bin/recovery-console`, stock recovery disabled, `on boot -> start recovery-console`). The Albus recovery ramdisk has no `/bin/sh`; it exposes `/sbin/sh -> busybox`. Therefore the Albus source keeps the device-specific shell helper using `DEFAULT_SHELL=/sbin/sh` so the upstream `stop recovery` / `start recovery` lifecycle remains functional on this recovery environment.
