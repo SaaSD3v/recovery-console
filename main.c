@@ -96,27 +96,6 @@ static void stdin_restore(void) {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_saved_tio);
 }
 
-/* Run recovery control commands through DEFAULT_SHELL.
- * Channel/TWRP uses /sbin/sh; do not assume /bin/sh exists in recovery. */
-static int run_shell_command(const char *cmd) {
-  pid_t pid = fork();
-  if (pid < 0)
-    return -1;
-  if (pid == 0) {
-    execl(DEFAULT_SHELL, DEFAULT_SHELL, "-c", cmd, NULL);
-    _exit(127);
-  }
-
-  int status = 0;
-  while (waitpid(pid, &status, 0) < 0) {
-    if (errno != EINTR)
-      return -1;
-  }
-  if (WIFEXITED(status))
-    return WEXITSTATUS(status);
-  return -1;
-}
-
 /*  --attach mode  */
 static int do_attach(void) {
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -170,7 +149,7 @@ static pid_t spawn_shell(int *pty_fd, int cols, int rows, const char *cmd) {
   if (pid == 0) {
     setenv("TERM", TERM_ENV, 1);
     if (cmd)
-      execl(DEFAULT_SHELL, DEFAULT_SHELL, "-c", cmd, NULL);
+      execl("/bin/sh", "/bin/sh", "-c", cmd, NULL);
     else
       execl(DEFAULT_SHELL, DEFAULT_SHELL, NULL);
     _exit(1);
@@ -223,12 +202,12 @@ int main(int argc, char **argv) {
       return 1;
     }
     LOG("background mode started");
-    (void)run_shell_command(CMD_STOP);
+    (void)system(CMD_STOP);
     sleep(1);
   } else {
     setsid();
     LOG("foreground mode started");
-    (void)run_shell_command(CMD_STOP);
+    (void)system(CMD_STOP);
     sleep(1);
   }
 
@@ -581,6 +560,6 @@ pty_dead:
   display_free(&disp); /* vt_restore inside */
 
   sync();
-  (void)run_shell_command(CMD_START);
+  (void)system(CMD_START);
   return 0;
 }
