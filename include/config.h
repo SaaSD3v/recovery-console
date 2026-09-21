@@ -7,7 +7,7 @@
 
 #define VERSION "v1.0.0-channel"
 
-/* Moto G7 Play (channel) - Qualcomm MDSS framebuffer recovery profile */
+/* Moto G7 Play (channel) - profile validated on TWRP 3.5.2_10-0 */
 /* Cell height in pixels; width is derived from font metrics */
 #define FONT_SIZE 22
 
@@ -43,32 +43,32 @@
 #define DEFAULT_BG 0
 #define CURSOR_COLOR 15
 
-/* Qualcomm MDSS framebuffer is expected in the normal RGB ordering. */
+/* Pixel order still requires visual confirmation; keep upstream RGB default. */
 #define COLOR_BGR 0
 
 /*
- * Channel uses a 720x1512 video-mode LCD panel. Keep the shadow buffer
- * enabled to avoid visible tearing while rendering through FBDEV.
+ * Real recovery probe exposes FBDEV only (no /dev/dri). In this codebase
+ * USE_SHADOW_BUFFER only changes the DRM path, so keep it disabled here.
  */
-#define USE_SHADOW_BUFFER 1
+#define USE_SHADOW_BUFFER 0
 
-/* Channel recovery is FBDEV-based; CRTC blanking is not used. */
+/* Real recovery probe exposes no DRM/KMS; CRTC blanking is not used. */
 #define USE_CRTC_BLANK 0
 
-/* Keep the upstream DRM probe/fallback layout intact. */
+/* No /dev/dri/card* exists on the tested recovery; keep upstream probe harmless. */
 #define DRM_DEVICE "/dev/dri/card0"
 #define DRM_MAJOR 226
 #define DRM_MINOR 0
 #define DRM_CONN_ID 0
 #define DRM_CRTC_ID 0
 
-/* Qualcomm MDSS primary framebuffer exposed by the recovery kernel. */
+/* Verified on-device: /dev/graphics/fb0 = major 29 minor 0, mdssfb_80000. */
 #define FB_DEVICE "/dev/graphics/fb0"
-#define FB_DEVICE_ALT "/dev/fb0"
+#define FB_DEVICE_ALT "/dev/fb0" /* not present on tested TWRP; harmless fallback */
 #define FB_MAJOR 29
 #define FB_MINOR 0
 
-/* TWRP recovery shell. */
+/* Verified: /sbin/sh -> /system/bin/sh on TWRP 3.5.2_10-0. */
 #define DEFAULT_SHELL "/sbin/sh"
 #define TERM_ENV "xterm-256color"
 
@@ -79,8 +79,8 @@
 #define SOCKET_PATH "/tmp/rc.sock"
 
 /*
- * The channel MDSS framebuffer driver registers the panel backlight as
- * the lcd-backlight LED class device. Panel DT sets the range to 1..255.
+ * Verified on-device: /sys/class/leds/lcd-backlight exists and max_brightness=255.
+ * The framebuffer reports 720x3024 virtual, 32 bpp, stride 2944, rotate=0.
  */
 #define BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
 #define BACKLIGHT_VAL 255
