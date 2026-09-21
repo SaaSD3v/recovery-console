@@ -1,142 +1,92 @@
-# Recovery Image Builder
+# Channel Recovery-as-Boot Builder
 
-This branch is intentionally separate from `main` and device configuration branches.
-Its only job is to compile a selected device profile of Recovery Console and inject it into a base Android recovery image.
+This branch is dedicated to the Moto G7 Play (`channel`).
 
-## What it does
+Unlike devices with a standalone recovery partition, Channel uses recovery-as-boot (`BOARD_USES_RECOVERY_AS_BOOT := true`). The official TWRP installer patches both `boot_a` and `boot_b` by replacing their ramdisk.
 
-For each request the workflow:
+For that reason this builder uses the official Channel TWRP installer ZIP as the source of the recovery ramdisk instead of treating recovery as a standalone partition image.
 
-1. Checks out the requested device source ref (`SOURCE_REF`).
-2. Builds the requested CPU architecture.
-3. Rebuilds it four times with `ROTATION=0,1,2,3`.
-4. Gets the base `recovery.img` from either a direct HTTPS URL or a file stored in this builder branch.
-5. Optionally verifies the base image SHA-256 before touching it.
-6. Downloads the official Magisk APK and extracts the Linux x86_64 `magiskboot` binary.
-7. Unpacks the recovery image with `magiskboot`.
-8. Adds `recovery-console` to the ramdisk.
-9. Adds a disabled `recovery-console` init service.
-10. Re-packs the image while preserving the boot-image structure handled by `magiskboot`.
-11. Re-opens the generated image and verifies that the binary and disabled init service exist.
-12. Uploads four integrated recovery images as GitHub Actions artifacts.
+## Build flow
 
-The builder never adds an `on boot -> start recovery-console` rule. The normal recovery remains the default UI.
+For each rotation (0/90/180/270 degrees) the workflow:
 
-## Why this branch uses a push request file
+1. Checks out `Channel-Configs`.
+2. Builds the aarch64 Recovery Console binary.
+3. Downloads or reads a Channel TWRP installer ZIP.
+4. Locates `ramdisk-twrp.cpio` or `ramdisk-recovery.cpio` inside the ZIP.
+5. Injects `recovery-console` into that ramdisk.
+6. Adds a disabled `recovery-console` init service.
+7. Rebuilds the TWRP installer ZIP without changing its recovery-as-boot installer logic.
+8. Extracts the resulting modified ramdisk as a separate artifact for inspection.
+9. Uploads the modified installer ZIP, ramdisk CPIO, SHA-256 and build information.
 
-GitHub only dispatches `workflow_dispatch` events when the workflow exists on the repository default branch. We keep `main` identical to upstream, so this builder is triggered by pushes to `builder/REQUEST.env` on `Recovery-Image-Builder` instead.
+The original Channel TWRP `update-binary` remains responsible for installation. It reads each device slot's current `boot_a` and `boot_b`, replaces only the ramdisk, repacks with `magiskboot`, and writes the result back. This preserves the kernel/DTB/header from the boot image already installed on the phone.
 
-## How to run a build
+## Input
 
-### Option A - recovery image inside the builder branch
+Copy `builder/REQUEST.env.example` to `builder/REQUEST.env`.
 
-1. Upload the base image as `builder/input/recovery.img` on `Recovery-Image-Builder`.
-2. Copy `builder/REQUEST.env.example` to `builder/REQUEST.env`.
-3. Use:
+Either provide a direct ZIP URL:
 
 ```sh
-SOURCE_REF=Albus-Configs
-RECOVERY_URL=''
-RECOVERY_PATH='builder/input/recovery.img'
-RECOVERY_SHA256='optional-sha256-here'
+SOURCE_REF=Channel-Configs
+TWRP_ZIP_URL='https://example.com/twrp-channel-installer.zip'
+TWRP_ZIP_PATH=''
+TWRP_ZIP_SHA256=''
 ARCHITECTURE=aarch64
-OUTPUT_PREFIX=albus-recovery-console
+OUTPUT_PREFIX=channel-recovery-console
 SECLABEL='u:r:recovery:s0'
 MAGISK_APK_URL=''
 REQUEST_ID=1
 ```
 
-4. Commit/push `builder/REQUEST.env`.
-
-### Option B - direct HTTPS recovery URL
-
-Use:
+or commit/upload the installer to this branch:
 
 ```sh
-SOURCE_REF=Albus-Configs
-RECOVERY_URL='https://github.com/USER/REPO/releases/download/base/recovery.img'
-RECOVERY_PATH=''
-RECOVERY_SHA256='optional-sha256-here'
+SOURCE_REF=Channel-Configs
+TWRP_ZIP_URL=''
+TWRP_ZIP_PATH='builder/input/twrp-channel-installer.zip'
+TWRP_ZIP_SHA256=''
 ARCHITECTURE=aarch64
-OUTPUT_PREFIX=albus-recovery-console
+OUTPUT_PREFIX=channel-recovery-console
 SECLABEL='u:r:recovery:s0'
 MAGISK_APK_URL=''
 REQUEST_ID=1
 ```
 
-Use exactly one of `RECOVERY_URL` or `RECOVERY_PATH`.
+A push changing `builder/REQUEST.env` on `Channel-Recovery-Image-Builder` triggers the build.
 
-After pushing the request, open GitHub Actions and wait for `Recovery Image Builder`. To rebuild the exact same configuration, increment `REQUEST_ID` and commit again.
+## Outputs
 
-## Generated variants
-
-For a prefix such as `albus-recovery-console` and architecture `aarch64`:
+Each rotation produces an installable ZIP such as:
 
 ```text
-albus-recovery-console-aarch64-rot0-0deg.img
-albus-recovery-console-aarch64-rot1-90deg.img
-albus-recovery-console-aarch64-rot2-180deg.img
-albus-recovery-console-aarch64-rot3-270deg.img
+channel-recovery-console-aarch64-rot0-0deg.zip
+channel-recovery-console-aarch64-rot1-90deg.zip
+channel-recovery-console-aarch64-rot2-180deg.zip
+channel-recovery-console-aarch64-rot3-270deg.zip
 ```
 
-Each artifact also contains a SHA-256 file and BUILD-INFO text.
+Each artifact also contains the modified recovery ramdisk CPIO, its build information, and the ZIP SHA-256.
 
-## Injected init service
+## Runtime behavior
 
-The builder normally injects a service equivalent to:
+Recovery Console does not autostart. TWRP remains the normal recovery UI.
 
-```rc
-service recovery-console /sbin/recovery-console
-    user root
-    group root
-    oneshot
-    disabled
-    seclabel u:r:recovery:s0
-```
-
-If the recovery does not already use `/sbin/recovery`, the builder installs the binary as `/recovery-console` instead and adjusts the service path automatically.
-
-There is intentionally no autostart rule. After booting the generated recovery, start it with:
+Start it from ADB with:
 
 ```sh
-adb shell start recovery-console
+start recovery-console
 ```
 
-Then attach with the actual installed path, normally:
+Then attach with:
 
 ```sh
-adb shell /sbin/recovery-console --attach
+/sbin/recovery-console --attach
 ```
 
-or, when the builder selected the root path:
+If the source ramdisk does not use `/sbin/recovery`, the builder falls back to `/recovery-console`.
 
-```sh
-adb shell /recovery-console --attach
-```
+## Why the output is primarily a ZIP, not recovery.img
 
-## Supported source profiles
-
-This branch is a generic **image integration mechanism**, not a universal hardware configuration generator.
-`SOURCE_REF` must already contain the correct device-specific Recovery Console settings such as backlight path, display quirks, shell path, margins, and other required configuration.
-
-Supported CPU build targets:
-
-- `aarch64`
-- `armhf`
-- `x86_64`
-- `x86`
-
-## Safety / fail-closed behavior
-
-The integration step fails instead of producing an image when:
-
-- `magiskboot` cannot unpack the image;
-- the image has no ramdisk;
-- no supported recovery/init rc file can be found;
-- the Recovery Console binary is missing;
-- a supplied base-image SHA-256 does not match;
-- the output image is empty;
-- the generated image cannot be unpacked again;
-- the injected binary or disabled init service cannot be verified after repacking.
-
-The base recovery image itself is never modified in place.
+Channel has no independent recovery partition. The persistent and firmware-safe artifact is therefore the modified TWRP installer ZIP. A standalone bootable image can only be produced safely when a matching Channel boot/recovery-as-boot image is supplied as an additional base, because the image also contains kernel/DTB/header data that is not present in the installer ramdisk alone.
