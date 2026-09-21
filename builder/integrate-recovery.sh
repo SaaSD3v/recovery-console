@@ -255,10 +255,12 @@ if console != 1:
     raise SystemExit(f"expected exactly one recovery-console service, found {console}")
 if autostart == 0:
     raise SystemExit("on boot -> start recovery-console is missing")
+
 init_text = (root / "init.rc").read_text(errors="surrogateescape")
 if f"service recovery-console {exe}" not in init_text:
     raise SystemExit("recovery-console service must be defined in /init.rc per upstream README")
-if not re.search(r'(?m)^on boot\\s*$[\\s\\S]*?^[ \\t]+start recovery-console\\s*
+if not re.search(r'(?m)^on boot\\s*$[\\s\\S]*?^[ \\t]+start recovery-console\\s*$', init_text):
+    raise SystemExit("recovery-console boot trigger must be defined in /init.rc per upstream README")
 PY
 
 # The known-good Albus TWRP ramdisk is LZMA. Preserve the detected family exactly.
