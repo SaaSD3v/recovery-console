@@ -97,7 +97,7 @@ static void stdin_restore(void) {
 }
 
 /* Run recovery control commands through DEFAULT_SHELL.
- * Albus recovery exposes /sbin/sh -> busybox and has no /bin/sh. */
+ * Channel/TWRP uses /sbin/sh; do not assume /bin/sh exists in recovery. */
 static int run_shell_command(const char *cmd) {
   pid_t pid = fork();
   if (pid < 0)
