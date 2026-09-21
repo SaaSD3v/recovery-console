@@ -418,14 +418,4 @@ if not found:
     raise SystemExit("stock recovery service missing in final image")
 PY
 
-printf '%s\n' \
-  "Integrated Recovery Console permanently into Albus recovery" \
-  "  base          : $BASE" \
-  "  output        : $OUT" \
-  "  compression   : $COMPRESSION" \
-  "  console path  : $CONSOLE_EXEC" \
-  "  stock recovery: disabled" \
-  "  console boot  : automatic (on boot)" \
-  "  image mode    : magiskboot unpack/repack -n preserved"
-
-sha256sum "$OUT"
+printf '%s\
