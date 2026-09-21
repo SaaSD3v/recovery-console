@@ -102,17 +102,19 @@ Recovery Console is therefore the primary recovery UI. The console service itsel
 
 If the console exits normally, its existing cleanup path can explicitly run `start recovery`, which remains a manual fallback to TWRP.
 
-For the tested Channel TWRP 3.5.2_10-0 ramdisk the console binary is installed as:
+For the tested Channel TWRP 3.5.2_10-0 ramdisk the console binary follows the upstream documented path exactly:
 
 ```sh
-/recovery-console
+/system/bin/recovery-console
 ```
 
 ADB attach:
 
 ```sh
-/recovery-console --attach
+/system/bin/recovery-console --attach
 ```
+
+The Channel profile also uses the upstream lifecycle code unchanged and the verified `/bin/sh` shell path.
 
 ## Why the output is primarily a ZIP, not recovery.img
 
