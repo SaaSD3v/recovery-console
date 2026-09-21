@@ -259,7 +259,7 @@ if autostart == 0:
 init_text = (root / "init.rc").read_text(errors="surrogateescape")
 if f"service recovery-console {exe}" not in init_text:
     raise SystemExit("recovery-console service must be defined in /init.rc per upstream README")
-if not re.search(r'(?m)^on boot\\s*$[\\s\\S]*?^[ \\t]+start recovery-console\\s*$', init_text):
+if "\non boot\n    start recovery-console\n" not in ("\n" + init_text):
     raise SystemExit("recovery-console boot trigger must be defined in /init.rc per upstream README")
 PY
 
