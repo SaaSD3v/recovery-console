@@ -30,10 +30,10 @@ The Recovery Console source comes from `Albus-Configs`.
 Each requested orientation produces its own final recovery image:
 
 ```text
-recovery-albus-console-portrait-0.img
-recovery-albus-console-landscape-90.img
-recovery-albus-console-portrait-180.img
-recovery-albus-console-landscape-270.img
+recovery-albus-console-permanent-portrait-0.img
+recovery-albus-console-permanent-landscape-90.img
+recovery-albus-console-permanent-portrait-180.img
+recovery-albus-console-permanent-landscape-270.img
 ```
 
 Each artifact also includes:
@@ -44,4 +44,12 @@ Each artifact also includes:
 
 The base kernel, DT and TWRP layout are not changed between orientation variants. Only the Recovery Console binary/configuration inside the ramdisk differs.
 
-Recovery Console remains a disabled init service by default, matching the Channel integration model. TWRP remains the normal recovery UI.
+The Albus builder also uses the documented **Permanent Integration** mode:
+
+- the stock `service recovery` is patched with `disabled`;
+- `service recovery-console /system/bin/recovery-console` is added;
+- `on boot -> start recovery-console` starts the console automatically;
+- the console service remains `disabled` only to prevent class autostart duplication;
+- explicit `start recovery` remains available as the fallback to TWRP.
+
+The integrator preserves the known-good legacy Albus image layout with `magiskboot unpack -n` / `repack -n`, preserves the detected LZMA ramdisk compression, and the workflow rejects any output whose kernel or DT differs from the known-good base.
