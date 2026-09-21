@@ -6,6 +6,22 @@ Unlike devices with a standalone recovery partition, Channel uses recovery-as-bo
 
 For that reason this builder uses the official Channel TWRP installer ZIP as the source of the recovery ramdisk instead of treating recovery as a standalone partition image.
 
+## GitHub Actions manual builder
+
+The repository default branch contains the **Channel TWRP + Recovery Console** workflow so it is available through the GitHub Actions **Run workflow** UI.
+
+Inputs:
+
+- `orientation=all` builds 0, 90, 180 and 270 degrees.
+- `portrait-0deg` builds rotation 0 only.
+- `landscape-90deg` builds rotation 1 only.
+- `portrait-180deg` builds rotation 2 only.
+- `landscape-270deg` builds rotation 3 only.
+- `twrp_version` selects an official Channel installer version.
+- `publish_release` optionally publishes the final installer ZIP(s) in a GitHub Release; Actions artifacts are always uploaded.
+
+The manual workflow opens the official Team Win download page for the selected version, follows the installer link exposed by that page, builds `Channel-Configs`, integrates the console into the ZIP's recovery ramdisk, and uploads the final native TWRP installer.
+
 ## Build flow
 
 For each rotation (0/90/180/270 degrees) the workflow:
