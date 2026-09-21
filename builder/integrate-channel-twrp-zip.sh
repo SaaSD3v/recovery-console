@@ -45,17 +45,57 @@ done
   exit 1
 }
 
-cpio -it < "$RAMDISK" > "$WORK/ramdisk.list" 2>/dev/null || {
-  echo "ERROR: cannot list $RAMDISK" >&2
-  exit 1
-}
+# The official Channel installer stores its recovery ramdisk compressed.
+# Work on an uncompressed CPIO, then restore the original compression format.
+RAW_RAMDISK="$WORK/ramdisk.raw.cpio"
+COMPRESSION="raw"
+
+if cpio -it < "$RAMDISK" > "$WORK/ramdisk.list" 2>/dev/null; then
+  cp -f "$RAMDISK" "$RAW_RAMDISK"
+else
+  DESC=$(file -b "$RAMDISK" || true)
+  MAGIC=$(xxd -p -l 8 "$RAMDISK" 2>/dev/null | tr -d '\n')
+
+  case "$MAGIC" in
+    1f8b*)         COMPRESSION="gzip" ;;
+    04224d18*)     COMPRESSION="lz4" ;;
+    02214c18*)     COMPRESSION="lz4_legacy" ;;
+    fd377a585a00*) COMPRESSION="xz" ;;
+    425a68*)       COMPRESSION="bzip2" ;;
+    *)
+      case "$DESC" in
+        *gzip*)  COMPRESSION="gzip" ;;
+        *XZ*)    COMPRESSION="xz" ;;
+        *LZMA*)  COMPRESSION="lzma" ;;
+        *bzip2*) COMPRESSION="bzip2" ;;
+        *LZ4*)   COMPRESSION="lz4" ;;
+        *)
+          echo "ERROR: unsupported ramdisk compression: $DESC (magic=$MAGIC)" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+  esac
+
+  echo "Ramdisk compression: $COMPRESSION ($DESC)"
+  "$MAGISKBOOT" decompress "$RAMDISK" "$RAW_RAMDISK"
+  [ -s "$RAW_RAMDISK" ] || {
+    echo "ERROR: magiskboot did not produce a decompressed ramdisk" >&2
+    exit 1
+  }
+
+  cpio -it < "$RAW_RAMDISK" > "$WORK/ramdisk.list" 2>/dev/null || {
+    echo "ERROR: decompressed $RAMDISK is not a valid CPIO archive" >&2
+    exit 1
+  }
+fi
 
 find_entry() {
   local needle="$1"
   grep -E "^(\./)?${needle}$" "$WORK/ramdisk.list" | head -n1 || true
 }
 
-# TWRP channel normally contains /sbin/recovery. Keep the same placement
+# Channel TWRP normally contains /sbin/recovery. Keep the same placement
 # strategy as the generic builder, but fail cleanly if the layout differs.
 if [ -n "$(find_entry 'sbin/recovery')" ]; then
   CONSOLE_ENTRY='sbin/recovery-console'
@@ -83,7 +123,7 @@ done
 mkdir -p "$WORK/extract"
 (
   cd "$WORK/extract"
-  cpio -idmu --quiet "$RC_ARCHIVE_ENTRY" < "$WORK/zip/$RAMDISK"
+  cpio -idmu --quiet "$RC_ARCHIVE_ENTRY" < "$RAW_RAMDISK"
 )
 RC_FILE="$WORK/extract/${RC_ARCHIVE_ENTRY#./}"
 [ -f "$RC_FILE" ] || { echo "ERROR: failed to extract $RC_ARCHIVE_ENTRY" >&2; exit 1; }
@@ -121,14 +161,14 @@ path.write_text(text.rstrip() + "\n\n" + "\n".join(block) + "\n",
                 errors="surrogateescape")
 PY
 
-"$MAGISKBOOT" cpio "$RAMDISK" "rm $RC_ARCHIVE_ENTRY" >/dev/null 2>&1 || true
-"$MAGISKBOOT" cpio "$RAMDISK" "rm $RC_ENTRY" >/dev/null 2>&1 || true
-"$MAGISKBOOT" cpio "$RAMDISK" "add $RC_MODE $RC_ENTRY $RC_FILE"
-"$MAGISKBOOT" cpio "$RAMDISK" "rm $CONSOLE_ENTRY" >/dev/null 2>&1 || true
-"$MAGISKBOOT" cpio "$RAMDISK" "add 0755 $CONSOLE_ENTRY $BIN"
+"$MAGISKBOOT" cpio "$RAW_RAMDISK" "rm $RC_ARCHIVE_ENTRY" >/dev/null 2>&1 || true
+"$MAGISKBOOT" cpio "$RAW_RAMDISK" "rm $RC_ENTRY" >/dev/null 2>&1 || true
+"$MAGISKBOOT" cpio "$RAW_RAMDISK" "add $RC_MODE $RC_ENTRY $RC_FILE"
+"$MAGISKBOOT" cpio "$RAW_RAMDISK" "rm $CONSOLE_ENTRY" >/dev/null 2>&1 || true
+"$MAGISKBOOT" cpio "$RAW_RAMDISK" "add 0755 $CONSOLE_ENTRY $BIN"
 
-# Prove the modified ramdisk contains both the binary and disabled init service.
-cpio -it < "$RAMDISK" > "$WORK/verify.list" 2>/dev/null
+# Verify the modified raw CPIO before recompressing it.
+cpio -it < "$RAW_RAMDISK" > "$WORK/verify.list" 2>/dev/null
 grep -Eq "^(\./)?${CONSOLE_ENTRY}$" "$WORK/verify.list"
 VERIFY_RC=$(grep -E "^(\./)?${RC_ENTRY}$" "$WORK/verify.list" | head -n1)
 [ -n "$VERIFY_RC" ]
@@ -136,11 +176,34 @@ VERIFY_RC=$(grep -E "^(\./)?${RC_ENTRY}$" "$WORK/verify.list" | head -n1)
 mkdir -p "$WORK/verify"
 (
   cd "$WORK/verify"
-  cpio -idmu --quiet "$VERIFY_RC" < "$WORK/zip/$RAMDISK"
+  cpio -idmu --quiet "$VERIFY_RC" < "$RAW_RAMDISK"
 )
 VERIFY_FILE="$WORK/verify/${VERIFY_RC#./}"
 grep -q '^service recovery-console ' "$VERIFY_FILE"
 grep -q '^[[:space:]]*disabled[[:space:]]*$' "$VERIFY_FILE"
+
+# Restore the exact compression family expected by the native TWRP installer.
+if [ "$COMPRESSION" = "raw" ]; then
+  cp -f "$RAW_RAMDISK" "$RAMDISK"
+else
+  rm -f "$RAMDISK"
+  "$MAGISKBOOT" "compress=$COMPRESSION" "$RAW_RAMDISK" "$RAMDISK"
+  [ -s "$RAMDISK" ] || {
+    echo "ERROR: failed to recompress ramdisk as $COMPRESSION" >&2
+    exit 1
+  }
+fi
+
+# Re-open the final ramdisk after compression and prove our changes survived.
+FINAL_RAW="$WORK/final-verify.cpio"
+if [ "$COMPRESSION" = "raw" ]; then
+  cp -f "$RAMDISK" "$FINAL_RAW"
+else
+  "$MAGISKBOOT" decompress "$RAMDISK" "$FINAL_RAW"
+fi
+cpio -it < "$FINAL_RAW" > "$WORK/final.list" 2>/dev/null
+grep -Eq "^(\./)?${CONSOLE_ENTRY}$" "$WORK/final.list"
+grep -Eq "^(\./)?${RC_ENTRY}$" "$WORK/final.list"
 
 # Preserve executable installer helpers before rebuilding the ZIP.
 chmod 0755 META-INF/com/google/android/update-binary magiskboot 2>/dev/null || true
@@ -151,14 +214,16 @@ zip -q -r -9 "$OUT" .
 [ -s "$OUT" ] || { echo "ERROR: output zip was not created" >&2; exit 1; }
 
 # Re-open output and verify installer + modified ramdisk are present.
-unzip -l "$OUT" | grep -q "META-INF/com/google/android/update-binary"
-unzip -l "$OUT" | grep -q "$RAMDISK"
+unzip -t "$OUT" >/dev/null
+unzip -Z1 "$OUT" | grep -q '^META-INF/com/google/android/update-binary$'
+unzip -Z1 "$OUT" | grep -q "^${RAMDISK}$"
 
 printf '%s\n' \
   "Integrated Recovery Console into Channel TWRP installer" \
   "  base zip     : $BASE_ZIP" \
   "  output zip   : $OUT" \
   "  ramdisk      : $RAMDISK" \
+  "  compression  : $COMPRESSION" \
   "  binary path  : $CONSOLE_EXEC" \
   "  init rc      : /$RC_ENTRY" \
   "  autostart    : NO (service is disabled)" \
