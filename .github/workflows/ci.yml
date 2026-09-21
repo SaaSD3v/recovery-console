@@ -3,7 +3,7 @@ run-name: ${{ github.event.head_commit.message || format('Release {0}', github.e
 
 on:
   push:
-    branches: [ "main", "master", "Albus-Configs" ]
+    branches: [ "main", "master", "Albus-Configs", "Channel-Configs" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -20,7 +20,7 @@ on:
 
 jobs:
   build:
-    name: Albus aarch64 - rot${{ matrix.rotation }} (${{ matrix.degrees }})
+    name: Channel aarch64 - rot${{ matrix.rotation }} (${{ matrix.degrees }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -38,12 +38,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Select Albus Rotation
+    - name: Select Channel Rotation
       run: |
         set -euxo pipefail
-        sed -i "s/^#define ALBUS_ROTATION 0$/#define ALBUS_ROTATION ${{ matrix.rotation }}/" include/config.h
-        grep -E '^#define (ALBUS_ROTATION|ROTATION)' include/config.h
-        echo "Building Albus ROTATION=${{ matrix.rotation }} (${{ matrix.degrees }})"
+        sed -i "s/^#define CHANNEL_ROTATION 0$/#define CHANNEL_ROTATION ${{ matrix.rotation }}/" include/config.h
+        grep -E '^#define (CHANNEL_ROTATION|ROTATION)' include/config.h
+        echo "Building Channel ROTATION=${{ matrix.rotation }} (${{ matrix.degrees }})"
 
     - name: Install dependencies
       run: |
@@ -73,20 +73,21 @@ jobs:
         test -s output/recovery-console-aarch64
         file output/recovery-console-aarch64
         sha256sum output/recovery-console-aarch64
-        grep -q "#define ALBUS_ROTATION ${{ matrix.rotation }}" include/config.h
+        grep -q "#define CHANNEL_ROTATION ${{ matrix.rotation }}" include/config.h
 
-    - name: Package Albus Rotation Artifact
+    - name: Package Channel Rotation Artifact
       run: |
         set -euxo pipefail
         VERSION=$(grep -oP 'VERSION\s+"\K[^"]+' include/config.h)
         ROT="rot${{ matrix.rotation }}-${{ matrix.degrees }}"
-        BIN_NAME="recovery-console-albus-aarch64-${ROT}"
+        BIN_NAME="recovery-console-channel-aarch64-${ROT}"
         TAR_NAME="recovery-console-${VERSION}-aarch64-${ROT}.tar.gz"
         mkdir -p dist package
         cp output/recovery-console-aarch64 "package/$BIN_NAME"
         printf '%s\n' \
-          "Device: Moto Z2 Play (albus)" \
+          "Device: Moto G7 Play (channel)" \
           "Architecture: aarch64" \
+          "Display: Qualcomm MDSS FBDEV, 720x1512" \
           "ROTATION=${{ matrix.rotation }}" \
           "Orientation=${{ matrix.degrees }} clockwise" \
           > "package/BUILD-INFO.txt"
@@ -98,7 +99,7 @@ jobs:
     - name: Upload Rotation Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: recovery-console-albus-aarch64-rot${{ matrix.rotation }}-${{ matrix.degrees }}
+        name: recovery-console-channel-aarch64-rot${{ matrix.rotation }}-${{ matrix.degrees }}
         path: dist/*.tar.gz
         if-no-files-found: error
 
@@ -150,7 +151,7 @@ jobs:
           ## What's Changed
           ${{ steps.changelog.outputs.notes }}
 
-          ## Albus rotation variants
+          ## Channel rotation variants
           - rot0 = 0 degrees
           - rot1 = 90 degrees clockwise
           - rot2 = 180 degrees
