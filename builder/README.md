@@ -31,7 +31,7 @@ For each rotation (0/90/180/270 degrees) the workflow:
 3. Downloads or reads a Channel TWRP installer ZIP.
 4. Locates `ramdisk-twrp.cpio` or `ramdisk-recovery.cpio` inside the ZIP.
 5. Injects `recovery-console` into that ramdisk.
-6. Adds a disabled `recovery-console` init service.
+6. Disables the stock `service recovery`, adds `service recovery-console`, and wires `on boot -> start recovery-console`.
 7. Rebuilds the TWRP installer ZIP without changing its recovery-as-boot installer logic.
 8. Extracts the resulting modified ramdisk as a separate artifact for inspection.
 9. Uploads the modified installer ZIP, ramdisk CPIO, SHA-256 and build information.
@@ -87,21 +87,32 @@ Each artifact also contains the modified recovery ramdisk CPIO, its build inform
 
 ## Runtime behavior
 
-Recovery Console does not autostart. TWRP remains the normal recovery UI.
+This builder uses the project's documented **Permanent Integration** mode.
 
-Start it from ADB with:
+On recovery boot:
 
-```sh
-start recovery-console
+```text
+init
+  -> stock service recovery = disabled
+  -> on boot
+  -> start recovery-console
 ```
 
-Then attach with:
+Recovery Console is therefore the primary recovery UI. The console service itself remains marked `disabled` so it is not class-started twice; the explicit `on boot` action starts it.
+
+If the console exits normally, its existing cleanup path can explicitly run `start recovery`, which remains a manual fallback to TWRP.
+
+For the tested Channel TWRP 3.5.2_10-0 ramdisk the console binary is installed as:
 
 ```sh
-/sbin/recovery-console --attach
+/recovery-console
 ```
 
-If the source ramdisk does not use `/sbin/recovery`, the builder falls back to `/recovery-console`.
+ADB attach:
+
+```sh
+/recovery-console --attach
+```
 
 ## Why the output is primarily a ZIP, not recovery.img
 
