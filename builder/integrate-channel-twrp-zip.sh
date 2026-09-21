@@ -307,30 +307,3 @@ printf '%s\n' \
   "  installer      : native Channel TWRP update-binary preserved"
 
 sha256sum "$OUT"
-, init_text):
-    raise SystemExit("recovery-console boot trigger must be defined in /init.rc per upstream README")
-PY
-
-if [ "$COMPRESSION" = raw ]; then
-  cp -f "$RAW" "$RAMDISK"
-else
-  rm -f "$RAMDISK"
-  "$MAGISKBOOT" "compress=$COMPRESSION" "$RAW" "$RAMDISK"
-fi
-[ -s "$RAMDISK" ] || { echo "ERROR: final ramdisk missing" >&2; exit 1; }
-
-ROUNDTRIP="$WORK/roundtrip.cpio"
-if [ "$COMPRESSION" = raw ]; then
-  cp -f "$RAMDISK" "$ROUNDTRIP"
-else
-  "$MAGISKBOOT" decompress "$RAMDISK" "$ROUNDTRIP"
-fi
-cmp -s "$RAW" "$ROUNDTRIP" || { echo "ERROR: ramdisk compression round-trip changed payload" >&2; exit 1; }
-
-chmod 0755 META-INF/com/google/android/update-binary magiskboot 2>/dev/null || true
-mkdir -p "$(dirname "$OUT")"
-rm -f "$OUT"
-zip -q -r -9 "$OUT" .
-unzip -t "$OUT" >/dev/null
-
-printf '%s\
