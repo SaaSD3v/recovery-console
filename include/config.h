@@ -68,8 +68,8 @@
 #define FB_MAJOR 29
 #define FB_MINOR 0
 
-/* Verified: /sbin/sh -> /system/bin/sh on TWRP 3.5.2_10-0. */
-#define DEFAULT_SHELL "/sbin/sh"
+/* Verified on-device: /bin/sh exists. Match upstream Recovery Console. */
+#define DEFAULT_SHELL "/bin/sh"
 #define TERM_ENV "xterm-256color"
 
 #define IO_BUFSZ 32768
