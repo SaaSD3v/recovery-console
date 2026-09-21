@@ -80,6 +80,7 @@ markers = [
     ("# BEGIN RECOVERY-CONSOLE-CHANNEL", "# END RECOVERY-CONSOLE-CHANNEL"),
     ("# BEGIN RECOVERY-CONSOLE-BUILDER", "# END RECOVERY-CONSOLE-BUILDER"),
     ("# BEGIN RECOVERY-CONSOLE-PERMANENT", "# END RECOVERY-CONSOLE-PERMANENT"),
+    ("# BEGIN RECOVERY-CONSOLE-OFFICIAL-PERMANENT", "# END RECOVERY-CONSOLE-OFFICIAL-PERMANENT"),
 ]
 
 modified = []
@@ -130,10 +131,18 @@ for path in sorted(root.rglob("*.rc")):
 if not stock_hosts:
     raise SystemExit("no stock Android init service named recovery was found")
 
-host = stock_hosts[0]
+host = root / "init.rc"
+if not host.is_file():
+    raise SystemExit("/init.rc is missing from ramdisk")
+
+for path in sorted(root.rglob("*.rc")):
+    text_check = path.read_text(errors="surrogateescape")
+    if re.search(r'(?m)^service[ \\t]+recovery-console[ \\t]+', text_check):
+        raise SystemExit(f"unexpected pre-existing recovery-console service outside managed block: {path}")
+
 text = host.read_text(errors="surrogateescape")
 block = [
-    "# BEGIN RECOVERY-CONSOLE-PERMANENT",
+    "# BEGIN RECOVERY-CONSOLE-OFFICIAL-PERMANENT",
     f"service recovery-console {exe}",
     "    user root",
     "    group root",
@@ -146,7 +155,7 @@ block += [
     "",
     "on boot",
     "    start recovery-console",
-    "# END RECOVERY-CONSOLE-PERMANENT",
+    "# END RECOVERY-CONSOLE-OFFICIAL-PERMANENT",
 ]
 host.write_text(text.rstrip() + "\n\n" + "\n".join(block) + "\n",
                 errors="surrogateescape")
@@ -246,6 +255,96 @@ if console != 1:
     raise SystemExit(f"expected exactly one recovery-console service, found {console}")
 if autostart == 0:
     raise SystemExit("on boot -> start recovery-console is missing")
+init_text = (root / "init.rc").read_text(errors="surrogateescape")
+if f"service recovery-console {exe}" not in init_text:
+    raise SystemExit("recovery-console service must be defined in /init.rc per upstream README")
+if not re.search(r'(?m)^on boot\\s*$[\\s\\S]*?^[ \\t]+start recovery-console\\s*
+PY
+
+# The known-good Albus TWRP ramdisk is LZMA. Preserve the detected family exactly.
+if [ "$COMPRESSION" = raw ]; then
+  cp -f "$RAW" ramdisk.cpio
+else
+  rm -f ramdisk.cpio
+  "$MAGISKBOOT" "compress=$COMPRESSION" "$RAW" ramdisk.cpio
+fi
+[ -s ramdisk.cpio ] || { echo "ERROR: final ramdisk.cpio missing" >&2; exit 1; }
+
+ROUNDTRIP="$WORK/roundtrip.cpio"
+if [ "$COMPRESSION" = raw ]; then
+  cp -f ramdisk.cpio "$ROUNDTRIP"
+else
+  "$MAGISKBOOT" decompress ramdisk.cpio "$ROUNDTRIP"
+fi
+cmp -s "$RAW" "$ROUNDTRIP" || { echo "ERROR: ramdisk compression round-trip mismatch" >&2; exit 1; }
+
+mkdir -p "$(dirname "$OUT")"
+"$MAGISKBOOT" repack -n base.img "$OUT"
+[ -s "$OUT" ] || { echo "ERROR: repack did not create output image" >&2; exit 1; }
+
+# Verify permanent integration again from the final image.
+FINAL="$WORK/final"
+mkdir -p "$FINAL"
+(
+  cd "$FINAL"
+  "$MAGISKBOOT" unpack -n "$OUT" >/dev/null
+)
+[ -s "$FINAL/ramdisk.cpio" ]
+FINAL_RAW="$WORK/final.raw.cpio"
+if cpio -it < "$FINAL/ramdisk.cpio" >/dev/null 2>&1; then
+  cp -f "$FINAL/ramdisk.cpio" "$FINAL_RAW"
+else
+  "$MAGISKBOOT" decompress "$FINAL/ramdisk.cpio" "$FINAL_RAW"
+fi
+FINAL_TREE="$WORK/final-tree"
+mkdir -p "$FINAL_TREE"
+(
+  cd "$FINAL_TREE"
+  "$MAGISKBOOT" cpio "$FINAL_RAW" "extract"
+)
+test -x "$FINAL_TREE/$CONSOLE_ENTRY"
+grep -R -q '^service recovery-console /system/bin/recovery-console$' "$FINAL_TREE" --include='*.rc'
+grep -R -q '^[[:space:]]*start recovery-console$' "$FINAL_TREE" --include='*.rc'
+
+python3 - "$FINAL_TREE" <<'PY'
+from pathlib import Path
+import re
+import sys
+root=Path(sys.argv[1])
+rx=re.compile(r'^service[ \t]+recovery[ \t]+\S+.*$')
+found=0
+for p in root.rglob("*.rc"):
+    try: lines=p.read_text(errors="surrogateescape").splitlines()
+    except OSError: continue
+    for i,line in enumerate(lines):
+        if not rx.match(line): continue
+        found += 1
+        j=i+1; block=[]
+        while j < len(lines):
+            x=lines[j]
+            if x and not x[0].isspace() and not x.lstrip().startswith("#"): break
+            block.append(x); j += 1
+        if not any(x.strip()=="disabled" for x in block):
+            raise SystemExit(f"{p}: stock recovery service is not disabled in final image")
+if not found:
+    raise SystemExit("stock recovery service missing in final image")
+PY
+
+printf '%s\n' \
+  "Integrated Recovery Console permanently into Albus recovery" \
+  "  base          : $BASE" \
+  "  output        : $OUT" \
+  "  compression   : $COMPRESSION" \
+  "  console path  : $CONSOLE_EXEC" \
+  "  stock recovery: disabled" \
+  "  service block : /init.rc" \
+  "  console boot  : automatic (on boot)" \
+  "  integration   : upstream README permanent init.rc method" \
+  "  image mode    : magiskboot unpack/repack -n preserved"
+
+sha256sum "$OUT"
+, init_text):
+    raise SystemExit("recovery-console boot trigger must be defined in /init.rc per upstream README")
 PY
 
 # The known-good Albus TWRP ramdisk is LZMA. Preserve the detected family exactly.
