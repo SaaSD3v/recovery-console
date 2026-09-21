@@ -1,8 +1,8 @@
-name: Recovery Image Builder
+name: Channel Recovery-as-Boot Builder
 
 on:
   push:
-    branches: ["Recovery-Image-Builder"]
+    branches: ["Channel-Recovery-Image-Builder"]
     paths:
       - "builder/REQUEST.env"
 
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: ${{ matrix.name }}
+    name: Channel ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -31,7 +31,7 @@ jobs:
             name: rot3-270deg
 
     steps:
-      - name: Checkout builder
+      - name: Checkout Channel builder
         uses: actions/checkout@v4
 
       - name: Read request
@@ -44,51 +44,45 @@ jobs:
           source builder/REQUEST.env
           set +a
 
-          : "${SOURCE_REF:?SOURCE_REF is required}"
-          : "${ARCHITECTURE:?ARCHITECTURE is required}"
-          : "${OUTPUT_PREFIX:=recovery-console}"
+          : "${SOURCE_REF:=Channel-Configs}"
+          : "${ARCHITECTURE:=aarch64}"
+          : "${OUTPUT_PREFIX:=channel-recovery-console}"
           : "${SECLABEL:=u:r:recovery:s0}"
-          : "${RECOVERY_URL:=}"
-          : "${RECOVERY_PATH:=}"
-          : "${RECOVERY_SHA256:=}"
+          : "${TWRP_ZIP_URL:=}"
+          : "${TWRP_ZIP_PATH:=}"
+          : "${TWRP_ZIP_SHA256:=}"
           : "${MAGISK_APK_URL:=}"
 
-          if [ -z "$RECOVERY_URL" ] && [ -z "$RECOVERY_PATH" ]; then
-            echo "Either RECOVERY_URL or RECOVERY_PATH is required" >&2
+          [ "$SOURCE_REF" = "Channel-Configs" ] || {
+            echo "ERROR: this builder is dedicated to SOURCE_REF=Channel-Configs" >&2
             exit 1
-          fi
-          if [ -n "$RECOVERY_URL" ] && [ -n "$RECOVERY_PATH" ]; then
-            echo "Use only one of RECOVERY_URL or RECOVERY_PATH" >&2
+          }
+          [ "$ARCHITECTURE" = "aarch64" ] || {
+            echo "ERROR: Channel requires ARCHITECTURE=aarch64" >&2
             exit 1
-          fi
+          }
 
-          case "$ARCHITECTURE" in
-            aarch64) TRIPLE=aarch64-linux-musl ;;
-            armhf)   TRIPLE=arm-linux-musleabihf ;;
-            x86_64)  TRIPLE=x86_64-linux-musl ;;
-            x86)     TRIPLE=i686-linux-musl ;;
-            *) echo "Unsupported ARCHITECTURE=$ARCHITECTURE" >&2; exit 1 ;;
-          esac
+          if [ -z "$TWRP_ZIP_URL" ] && [ -z "$TWRP_ZIP_PATH" ]; then
+            echo "Either TWRP_ZIP_URL or TWRP_ZIP_PATH is required" >&2
+            exit 1
+          fi
+          if [ -n "$TWRP_ZIP_URL" ] && [ -n "$TWRP_ZIP_PATH" ]; then
+            echo "Use only one of TWRP_ZIP_URL or TWRP_ZIP_PATH" >&2
+            exit 1
+          fi
 
           {
             echo "source_ref=$SOURCE_REF"
-            echo "recovery_url=$RECOVERY_URL"
-            echo "recovery_path=$RECOVERY_PATH"
-            echo "recovery_sha256=$RECOVERY_SHA256"
+            echo "twrp_zip_url=$TWRP_ZIP_URL"
+            echo "twrp_zip_path=$TWRP_ZIP_PATH"
+            echo "twrp_zip_sha256=$TWRP_ZIP_SHA256"
             echo "architecture=$ARCHITECTURE"
-            echo "triple=$TRIPLE"
             echo "output_prefix=$OUTPUT_PREFIX"
             echo "seclabel=$SECLABEL"
             echo "magisk_apk_url=$MAGISK_APK_URL"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Source ref   : $SOURCE_REF"
-          echo "Architecture : $ARCHITECTURE"
-          echo "Recovery URL : ${RECOVERY_URL:-<not used>}"
-          echo "Recovery path: ${RECOVERY_PATH:-<not used>}"
-          echo "Rotation     : ${{ matrix.rotation }} (${{ matrix.degrees }})"
-
-      - name: Checkout device source
+      - name: Checkout Channel profile
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.cfg.outputs.source_ref }}
@@ -97,21 +91,20 @@ jobs:
       - name: Install host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl wget unzip jq cpio file xxd xz-utils lz4
+          sudo apt-get install -y build-essential curl wget unzip zip jq cpio file xxd xz-utils lz4
 
-      - name: Download target toolchain
+      - name: Download aarch64 toolchain
         shell: bash
         run: |
           set -euo pipefail
-          TRIPLE='${{ steps.cfg.outputs.triple }}'
           mkdir -p "$HOME/toolchains"
           cd "$HOME/toolchains"
-          URL="https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers/${TRIPLE}-cross.tar.gz"
+          URL="https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers/aarch64-linux-musl-cross.tar.gz"
           curl -fL --retry 3 --retry-delay 2 -o toolchain.tar.gz "$URL"
           tar -xzf toolchain.tar.gz
-          test -x "$HOME/toolchains/${TRIPLE}-cross/bin/${TRIPLE}-gcc"
+          test -x "$HOME/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
 
-      - name: Patch requested rotation
+      - name: Patch Channel rotation
         run: |
           python3 builder/set-rotation.py console-src/include/config.h '${{ matrix.rotation }}'
           grep -E '^#define[[:space:]]+ROTATION[[:space:]]+' console-src/include/config.h
@@ -119,7 +112,7 @@ jobs:
       - name: Build FreeType
         run: |
           chmod +x builder/build-freetype.sh
-          builder/build-freetype.sh '${{ steps.cfg.outputs.triple }}' "$GITHUB_WORKSPACE/console-src"
+          builder/build-freetype.sh aarch64-linux-musl "$GITHUB_WORKSPACE/console-src"
 
       - name: Build Recovery Console
         shell: bash
@@ -127,40 +120,43 @@ jobs:
           set -euo pipefail
           cd console-src
           make clean
-          make '${{ steps.cfg.outputs.architecture }}' V=1
-          BIN="output/recovery-console-${{ steps.cfg.outputs.architecture }}"
-          test -s "$BIN"
-          chmod 0755 "$BIN"
-          file "$BIN"
-          sha256sum "$BIN"
+          make aarch64 V=1
+          test -s output/recovery-console-aarch64
+          chmod 0755 output/recovery-console-aarch64
+          file output/recovery-console-aarch64
+          sha256sum output/recovery-console-aarch64
 
-      - name: Prepare base recovery image
+      - name: Prepare Channel TWRP installer ZIP
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p input
-          URL='${{ steps.cfg.outputs.recovery_url }}'
-          PATH_IN='${{ steps.cfg.outputs.recovery_path }}'
-          EXPECTED='${{ steps.cfg.outputs.recovery_sha256 }}'
+          URL='${{ steps.cfg.outputs.twrp_zip_url }}'
+          PATH_IN='${{ steps.cfg.outputs.twrp_zip_path }}'
+          EXPECTED='${{ steps.cfg.outputs.twrp_zip_sha256 }}'
 
           if [ -n "$URL" ]; then
-            curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 \
-              -o input/recovery.img "$URL"
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 -o input/twrp-channel.zip "$URL"
           else
             test -f "$PATH_IN"
-            cp "$PATH_IN" input/recovery.img
+            cp "$PATH_IN" input/twrp-channel.zip
           fi
 
-          test -s input/recovery.img
-          file input/recovery.img || true
-          ACTUAL=$(sha256sum input/recovery.img | awk '{print $1}')
-          echo "Base recovery SHA-256: $ACTUAL"
+          test -s input/twrp-channel.zip
+          unzip -t input/twrp-channel.zip >/dev/null
+
+          ACTUAL=$(sha256sum input/twrp-channel.zip | awk '{print $1}')
+          echo "Base TWRP installer SHA-256: $ACTUAL"
           if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "ERROR: base recovery SHA-256 mismatch" >&2
+            echo "ERROR: TWRP installer SHA-256 mismatch" >&2
             exit 1
           fi
 
-      - name: Install magiskboot
+          unzip -l input/twrp-channel.zip | grep -Eq 'ramdisk-(twrp|recovery)\.cpio'
+          unzip -l input/twrp-channel.zip | grep -q 'META-INF/com/google/android/update-binary'
+          unzip -l input/twrp-channel.zip | grep -q 'magiskboot'
+
+      - name: Install host magiskboot
         shell: bash
         run: |
           set -euo pipefail
@@ -172,48 +168,54 @@ jobs:
               | head -n1)
           fi
           [ -n "$MAGISK_URL" ] && [ "$MAGISK_URL" != "null" ]
-          echo "Magisk APK: $MAGISK_URL"
           curl -fL --retry 3 --retry-delay 2 -o tools/Magisk.apk "$MAGISK_URL"
           unzip -p tools/Magisk.apk lib/x86_64/libmagiskboot.so > tools/magiskboot
           chmod 0755 tools/magiskboot
           test -x tools/magiskboot
           test -s tools/magiskboot
 
-      - name: Integrate Recovery Console into recovery image
+      - name: Integrate Recovery Console into TWRP ramdisk
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x builder/integrate-recovery.sh
+          chmod +x builder/integrate-channel-twrp-zip.sh
           mkdir -p dist
-          OUT="dist/${{ steps.cfg.outputs.output_prefix }}-${{ steps.cfg.outputs.architecture }}-${{ matrix.name }}.img"
-          builder/integrate-recovery.sh \
+          OUT="dist/${{ steps.cfg.outputs.output_prefix }}-aarch64-${{ matrix.name }}.zip"
+
+          builder/integrate-channel-twrp-zip.sh \
             tools/magiskboot \
-            input/recovery.img \
-            "console-src/output/recovery-console-${{ steps.cfg.outputs.architecture }}" \
+            input/twrp-channel.zip \
+            console-src/output/recovery-console-aarch64 \
             "$OUT" \
             '${{ steps.cfg.outputs.seclabel }}'
 
+          RAMDISK=$(unzip -Z1 "$OUT" | grep -E '^ramdisk-(twrp|recovery)\.cpio$' | head -n1)
+          [ -n "$RAMDISK" ]
+          unzip -p "$OUT" "$RAMDISK" > "dist/${{ steps.cfg.outputs.output_prefix }}-aarch64-${{ matrix.name }}-$RAMDISK"
+
           cat > "dist/BUILD-INFO-${{ matrix.name }}.txt" <<EOF
-          Recovery Console source ref: ${{ steps.cfg.outputs.source_ref }}
-          Architecture: ${{ steps.cfg.outputs.architecture }}
+          Device: Moto G7 Play (channel)
+          Recovery layout: recovery-as-boot
+          Source profile: ${{ steps.cfg.outputs.source_ref }}
+          Architecture: aarch64
           ROTATION=${{ matrix.rotation }}
           Orientation=${{ matrix.degrees }} clockwise
-          Base recovery URL: ${{ steps.cfg.outputs.recovery_url }}
-          Base recovery path: ${{ steps.cfg.outputs.recovery_path }}
-          Service autostart: disabled
+          Installer patches: boot_a + boot_b
+          Recovery Console autostart: disabled
           SELinux seclabel: ${{ steps.cfg.outputs.seclabel }}
           EOF
 
           sha256sum "$OUT" > "$OUT.sha256"
           ls -lh dist/
 
-      - name: Upload integrated recovery image
+      - name: Upload Channel recovery-as-boot artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.cfg.outputs.output_prefix }}-${{ steps.cfg.outputs.architecture }}-${{ matrix.name }}
+          name: ${{ steps.cfg.outputs.output_prefix }}-aarch64-${{ matrix.name }}
           path: |
-            dist/*.img
-            dist/*.sha256
+            dist/*.zip
+            dist/*.zip.sha256
+            dist/*ramdisk*.cpio
             dist/BUILD-INFO-*.txt
           if-no-files-found: error
           compression-level: 0
