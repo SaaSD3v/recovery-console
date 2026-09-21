@@ -44,7 +44,7 @@ Each artifact also includes:
 
 The base kernel, DT and TWRP layout are not changed between orientation variants. Only the Recovery Console binary/configuration inside the ramdisk differs.
 
-The Albus builder also uses the documented **Permanent Integration** mode:
+The Albus builder uses the upstream README **Permanent Integration** layout. The console definition and boot trigger are written to the ramdisk root `/init.rc`, while the original stock recovery definition remains in its original file and receives only `disabled`:
 
 - the stock `service recovery` is patched with `disabled`;
 - `service recovery-console /system/bin/recovery-console` is added;
@@ -52,7 +52,7 @@ The Albus builder also uses the documented **Permanent Integration** mode:
 - the console service remains `disabled` only to prevent class autostart duplication;
 - explicit `start recovery` remains available as the fallback to TWRP.
 
-The integrator preserves the known-good legacy Albus image layout with `magiskboot unpack -n` / `repack -n`, preserves the detected LZMA ramdisk compression, and the workflow rejects any output whose kernel or DT differs from the known-good base.
+The known-good Albus ramdisk starts `/sbin/permissive.sh` through the default init class; that script executes `setenforce 0`, so no additional SELinux policy rewrite is injected. The integrator preserves the known-good legacy Albus image layout with `magiskboot unpack -n` / `repack -n`, preserves the detected LZMA ramdisk compression, and the workflow rejects any output whose kernel or DT differs from the known-good base.
 
 ## Albus shell exception
 
