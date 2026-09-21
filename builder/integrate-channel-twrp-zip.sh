@@ -88,6 +88,7 @@ markers = [
     ("# BEGIN RECOVERY-CONSOLE-CHANNEL", "# END RECOVERY-CONSOLE-CHANNEL"),
     ("# BEGIN RECOVERY-CONSOLE-BUILDER", "# END RECOVERY-CONSOLE-BUILDER"),
     ("# BEGIN RECOVERY-CONSOLE-PERMANENT", "# END RECOVERY-CONSOLE-PERMANENT"),
+    ("# BEGIN RECOVERY-CONSOLE-OFFICIAL-PERMANENT", "# END RECOVERY-CONSOLE-OFFICIAL-PERMANENT"),
 ]
 
 modified = []
@@ -138,10 +139,18 @@ for path in sorted(root.rglob("*.rc")):
 if not stock_hosts:
     raise SystemExit("no stock Android init service named recovery was found")
 
-host = stock_hosts[0]
+host = root / "init.rc"
+if not host.is_file():
+    raise SystemExit("/init.rc is missing from ramdisk")
+
+for path in sorted(root.rglob("*.rc")):
+    text_check = path.read_text(errors="surrogateescape")
+    if re.search(r'(?m)^service[ \\t]+recovery-console[ \\t]+', text_check):
+        raise SystemExit(f"unexpected pre-existing recovery-console service outside managed block: {path}")
+
 text = host.read_text(errors="surrogateescape")
 block = [
-    "# BEGIN RECOVERY-CONSOLE-PERMANENT",
+    "# BEGIN RECOVERY-CONSOLE-OFFICIAL-PERMANENT",
     f"service recovery-console {exe}",
     "    user root",
     "    group root",
@@ -154,7 +163,7 @@ block += [
     "",
     "on boot",
     "    start recovery-console",
-    "# END RECOVERY-CONSOLE-PERMANENT",
+    "# END RECOVERY-CONSOLE-OFFICIAL-PERMANENT",
 ]
 host.write_text(text.rstrip() + "\n\n" + "\n".join(block) + "\n",
                 errors="surrogateescape")
@@ -253,6 +262,51 @@ if console != 1:
     raise SystemExit(f"expected exactly one recovery-console service, found {console}")
 if autostart == 0:
     raise SystemExit("on boot -> start recovery-console is missing")
+init_text = (root / "init.rc").read_text(errors="surrogateescape")
+if f"service recovery-console {exe}" not in init_text:
+    raise SystemExit("recovery-console service must be defined in /init.rc per upstream README")
+if not re.search(r'(?m)^on boot\\s*$[\\s\\S]*?^[ \\t]+start recovery-console\\s*
+PY
+
+if [ "$COMPRESSION" = raw ]; then
+  cp -f "$RAW" "$RAMDISK"
+else
+  rm -f "$RAMDISK"
+  "$MAGISKBOOT" "compress=$COMPRESSION" "$RAW" "$RAMDISK"
+fi
+[ -s "$RAMDISK" ] || { echo "ERROR: final ramdisk missing" >&2; exit 1; }
+
+ROUNDTRIP="$WORK/roundtrip.cpio"
+if [ "$COMPRESSION" = raw ]; then
+  cp -f "$RAMDISK" "$ROUNDTRIP"
+else
+  "$MAGISKBOOT" decompress "$RAMDISK" "$ROUNDTRIP"
+fi
+cmp -s "$RAW" "$ROUNDTRIP" || { echo "ERROR: ramdisk compression round-trip changed payload" >&2; exit 1; }
+
+chmod 0755 META-INF/com/google/android/update-binary magiskboot 2>/dev/null || true
+mkdir -p "$(dirname "$OUT")"
+rm -f "$OUT"
+zip -q -r -9 "$OUT" .
+unzip -t "$OUT" >/dev/null
+
+printf '%s\n' \
+  "Integrated Recovery Console permanently into Channel TWRP installer" \
+  "  base zip       : $BASE_ZIP" \
+  "  output zip     : $OUT" \
+  "  ramdisk        : $RAMDISK" \
+  "  compression    : $COMPRESSION" \
+  "  console path   : $CONSOLE_EXEC" \
+  "  stock recovery : disabled" \
+  "  console boot   : automatic (on boot)" \
+  "  service block  : /init.rc" \
+  "  integration    : upstream README permanent init.rc method" \
+  "  fallback       : upstream cleanup may explicitly 'start recovery' on exit" \
+  "  installer      : native Channel TWRP update-binary preserved"
+
+sha256sum "$OUT"
+, init_text):
+    raise SystemExit("recovery-console boot trigger must be defined in /init.rc per upstream README")
 PY
 
 if [ "$COMPRESSION" = raw ]; then
