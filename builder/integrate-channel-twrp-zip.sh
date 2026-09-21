@@ -63,13 +63,9 @@ fi
 [ -s "$RAW" ] || { echo "ERROR: failed to obtain raw ramdisk CPIO" >&2; exit 1; }
 cpio -it < "$RAW" > "$WORK/ramdisk.list" 2>/dev/null
 
-if grep -Eq '^(\./)?sbin/recovery$' "$WORK/ramdisk.list"; then
-  CONSOLE_ENTRY='sbin/recovery-console'
-  CONSOLE_EXEC='/sbin/recovery-console'
-else
-  CONSOLE_ENTRY='recovery-console'
-  CONSOLE_EXEC='/recovery-console'
-fi
+# Match the upstream README permanent-integration path exactly.
+CONSOLE_ENTRY='system/bin/recovery-console'
+CONSOLE_EXEC='/system/bin/recovery-console'
 
 PATCH="$WORK/patch"
 VERIFY="$WORK/verify"
