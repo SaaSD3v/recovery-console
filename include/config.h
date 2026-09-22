@@ -42,8 +42,8 @@
 /* Albus FBDEV layout: R@0, G@8, B@16, A@24. */
 #define COLOR_BGR 1
 
-/* FBDEV renders directly to the mapped scanout buffer. */
-#define USE_SHADOW_BUFFER 0
+/* Shadow buffer helps avoid tearing on the Z2 Play LCD framebuffer. */
+#define USE_SHADOW_BUFFER 1
 
 /* Albus recovery exposes FBDEV, not DRM/KMS. Keep CRTC blank disabled. */
 #define USE_CRTC_BLANK 0
@@ -71,7 +71,7 @@
 #define CSI_PARAMS_MAX 16
 #define SOCKET_PATH "/tmp/rc.sock"
 
-/* Qualcomm MDSS primary LCD backlight path used by the Albus recovery. */
+/* Qualcomm MDSS primary LCD backlight discovered on Moto Z2 Play recovery. */
 #define BACKLIGHT_PATH                                                         \
   "/sys/devices/soc/1a00000.qcom,mdss_mdp/1a00000.qcom,mdss_mdp:qcom,mdss_fb_primary/leds/lcd-backlight/brightness"
 #define BACKLIGHT_VAL 255
