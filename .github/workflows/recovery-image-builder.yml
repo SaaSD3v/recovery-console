@@ -1,219 +1,311 @@
-name: Recovery Image Builder
+name: Albus Recovery Image Builder
 
 on:
   push:
-    branches: ["Recovery-Image-Builder"]
+    branches: ["Albus-Recovery-Image-Builder"]
     paths:
       - "builder/REQUEST.env"
+      - "builder/integrate-recovery.sh"
+      - "builder/set-albus-rotation.py"
+      - "builder/build-freetype.sh"
+      - ".github/workflows/recovery-image-builder.yml"
 
 permissions:
   contents: read
 
+env:
+  ALBUS_BASE_BUILDER_COMMIT: "a567dec13ee75bb50b0640525b20b5fc22ff6eac"
+  ALBUS_KERNEL_COMMIT: "9a7416218ae637c4120c417b31428bb0747fdfdf"
+  ALBUS_TWRP_FILE: "twrp-3.5.0_9-0-albus.img"
+  ALBUS_TWRP_SHA256: "4c42bfee165ea99e2663284a3634135786e157bd6cc492fcbe0d9bd3430e9261"
+  ALBUS_RECOVERY_LIMIT: "21073920"
+  MAGISK_VERSION: "30.7"
+  MAGISK_APK_SHA256: "e0d32d2123532860f97123d927b1bb86c4e08e6fd8a48bfc6b5bee0afae9ebd5"
+  MAGISKBOOT_SHA256: "a18ecbd7981179494b7d281453d6c4e25b5c719e7d2ef7f6eba3c6be3043c58e"
+
 jobs:
-  build:
-    name: ${{ matrix.name }}
+  prepare:
+    name: Read Albus request
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - rotation: 0
-            degrees: 0deg
-            name: rot0-0deg
-          - rotation: 1
-            degrees: 90deg
-            name: rot1-90deg
-          - rotation: 2
-            degrees: 180deg
-            name: rot2-180deg
-          - rotation: 3
-            degrees: 270deg
-            name: rot3-270deg
-
+    outputs:
+      matrix: ${{ steps.cfg.outputs.matrix }}
+      source_ref: ${{ steps.cfg.outputs.source_ref }}
     steps:
-      - name: Checkout builder
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Read request
+      - name: Resolve request
         id: cfg
         shell: bash
         run: |
           set -euo pipefail
-          [ -f builder/REQUEST.env ] || { echo "builder/REQUEST.env not found" >&2; exit 1; }
+          test -f builder/REQUEST.env
           set -a
           source builder/REQUEST.env
           set +a
 
-          : "${SOURCE_REF:?SOURCE_REF is required}"
-          : "${ARCHITECTURE:?ARCHITECTURE is required}"
-          : "${OUTPUT_PREFIX:=recovery-console}"
-          : "${SECLABEL:=u:r:recovery:s0}"
-          : "${RECOVERY_URL:=}"
-          : "${RECOVERY_PATH:=}"
-          : "${RECOVERY_SHA256:=}"
-          : "${MAGISK_APK_URL:=}"
+          : "${SOURCE_REF:=Albus-Configs}"
+          : "${ORIENTATION:=all}"
 
-          if [ -z "$RECOVERY_URL" ] && [ -z "$RECOVERY_PATH" ]; then
-            echo "Either RECOVERY_URL or RECOVERY_PATH is required" >&2
+          [ "$SOURCE_REF" = "Albus-Configs" ] || {
+            echo "ERROR: Albus recovery builder only accepts SOURCE_REF=Albus-Configs" >&2
             exit 1
-          fi
-          if [ -n "$RECOVERY_URL" ] && [ -n "$RECOVERY_PATH" ]; then
-            echo "Use only one of RECOVERY_URL or RECOVERY_PATH" >&2
-            exit 1
-          fi
+          }
 
-          case "$ARCHITECTURE" in
-            aarch64) TRIPLE=aarch64-linux-musl ;;
-            armhf)   TRIPLE=arm-linux-musleabihf ;;
-            x86_64)  TRIPLE=x86_64-linux-musl ;;
-            x86)     TRIPLE=i686-linux-musl ;;
-            *) echo "Unsupported ARCHITECTURE=$ARCHITECTURE" >&2; exit 1 ;;
+          case "$ORIENTATION" in
+            all)
+              MATRIX='{"include":[
+                {"rotation":0,"degrees":"0deg","orientation":"portrait-0"},
+                {"rotation":1,"degrees":"90deg","orientation":"landscape-90"},
+                {"rotation":2,"degrees":"180deg","orientation":"portrait-180"},
+                {"rotation":3,"degrees":"270deg","orientation":"landscape-270"}
+              ]}'
+              ;;
+            portrait-0)
+              MATRIX='{"include":[{"rotation":0,"degrees":"0deg","orientation":"portrait-0"}]}'
+              ;;
+            landscape-90)
+              MATRIX='{"include":[{"rotation":1,"degrees":"90deg","orientation":"landscape-90"}]}'
+              ;;
+            portrait-180)
+              MATRIX='{"include":[{"rotation":2,"degrees":"180deg","orientation":"portrait-180"}]}'
+              ;;
+            landscape-270)
+              MATRIX='{"include":[{"rotation":3,"degrees":"270deg","orientation":"landscape-270"}]}'
+              ;;
+            *)
+              echo "ERROR: unsupported ORIENTATION=$ORIENTATION" >&2
+              exit 1
+              ;;
           esac
 
-          {
-            echo "source_ref=$SOURCE_REF"
-            echo "recovery_url=$RECOVERY_URL"
-            echo "recovery_path=$RECOVERY_PATH"
-            echo "recovery_sha256=$RECOVERY_SHA256"
-            echo "architecture=$ARCHITECTURE"
-            echo "triple=$TRIPLE"
-            echo "output_prefix=$OUTPUT_PREFIX"
-            echo "seclabel=$SECLABEL"
-            echo "magisk_apk_url=$MAGISK_APK_URL"
-          } >> "$GITHUB_OUTPUT"
+          MATRIX=$(printf '%s' "$MATRIX" | tr -d '\n' | tr -d ' ')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
 
-          echo "Source ref   : $SOURCE_REF"
-          echo "Architecture : $ARCHITECTURE"
-          echo "Recovery URL : ${RECOVERY_URL:-<not used>}"
-          echo "Recovery path: ${RECOVERY_PATH:-<not used>}"
-          echo "Rotation     : ${{ matrix.rotation }} (${{ matrix.degrees }})"
-
-      - name: Checkout device source
+  base:
+    name: Build known-good Albus base
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout known-good Albus builder snapshot
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.cfg.outputs.source_ref }}
-          path: console-src
+          repository: SaaSD3v/albus-builder
+          ref: ${{ env.ALBUS_BASE_BUILDER_COMMIT }}
+          path: albus-base
 
-      - name: Install host dependencies
+      - name: Install base build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl wget unzip jq cpio file xxd xz-utils lz4
+          sudo apt-get install --yes             bc binutils bison build-essential curl file flex git             libelf-dev libssl-dev lzma python-is-python3 unzip xxd xz-utils
 
-      - name: Download target toolchain
+      - name: Build exact known-good kernel and TWRP base
         shell: bash
         run: |
           set -euo pipefail
-          TRIPLE='${{ steps.cfg.outputs.triple }}'
+          cd albus-base
+          python3 scripts/run-current-kernel-builder.py scripts/build.sh             2>&1 | tee "$GITHUB_WORKSPACE/albus-base-build.log"
+
+      - name: Verify pinned base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="albus-base/artifacts/recovery.img"
+          INFO="albus-base/artifacts/build-info.txt"
+          test -s "$BASE"
+          test -s "$INFO"
+          [ "$(dd if="$BASE" bs=1 count=8 status=none)" = "ANDROID!" ]
+          grep -Fqx "kernel_commit=$ALBUS_KERNEL_COMMIT" "$INFO"
+          grep -Fqx "twrp_base=$ALBUS_TWRP_FILE" "$INFO"
+          grep -Fqx "twrp_base_sha256=$ALBUS_TWRP_SHA256" "$INFO"
+          SIZE=$(stat -c '%s' "$BASE")
+          [ "$SIZE" -le "$ALBUS_RECOVERY_LIMIT" ]
+          sha256sum "$BASE"
+          cat "$INFO"
+
+      - name: Upload reusable known-good base
+        uses: actions/upload-artifact@v4
+        with:
+          name: albus-known-good-base-${{ github.run_id }}
+          path: |
+            albus-base/artifacts/recovery.img
+            albus-base/artifacts/Image.gz
+            albus-base/artifacts/dt.img
+            albus-base/artifacts/kernel.config
+            albus-base/artifacts/build-info.txt
+            albus-base/artifacts/SHA256SUMS
+            albus-base-build.log
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  build:
+    name: Albus permanent - ${{ matrix.orientation }}
+    needs: [prepare, base]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout Albus recovery builder
+        uses: actions/checkout@v4
+        with:
+          ref: Albus-Recovery-Image-Builder
+          path: builder-tools
+
+      - name: Checkout Albus binary profile
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_ref }}
+          path: console-src
+
+      - name: Download known-good base
+        uses: actions/download-artifact@v4
+        with:
+          name: albus-known-good-base-${{ github.run_id }}
+          path: base-artifact
+
+      - name: Install console build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl file unzip cpio xxd xz-utils lz4
+
+      - name: Download aarch64 musl toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p "$HOME/toolchains"
           cd "$HOME/toolchains"
-          URL="https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers/${TRIPLE}-cross.tar.gz"
-          curl -fL --retry 3 --retry-delay 2 -o toolchain.tar.gz "$URL"
-          tar -xzf toolchain.tar.gz
-          test -x "$HOME/toolchains/${TRIPLE}-cross/bin/${TRIPLE}-gcc"
+          curl -fL --retry 3 --retry-delay 2 --connect-timeout 30             -o aarch64-linux-musl-cross.tar.gz             "https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers/aarch64-linux-musl-cross.tar.gz"
+          tar -xzf aarch64-linux-musl-cross.tar.gz
+          "$HOME/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" --version
 
-      - name: Patch requested rotation
+      - name: Select Albus orientation
+        shell: bash
         run: |
-          python3 builder/set-rotation.py console-src/include/config.h '${{ matrix.rotation }}'
-          grep -E '^#define[[:space:]]+ROTATION[[:space:]]+' console-src/include/config.h
+          set -euo pipefail
+          python3 builder-tools/builder/set-albus-rotation.py             console-src/include/config.h             '${{ matrix.rotation }}'
+          grep -E '^#define[[:space:]]+(ALBUS_ROTATION|ROTATION)[[:space:]]+' console-src/include/config.h
 
       - name: Build FreeType
+        shell: bash
         run: |
-          chmod +x builder/build-freetype.sh
-          builder/build-freetype.sh '${{ steps.cfg.outputs.triple }}' "$GITHUB_WORKSPACE/console-src"
+          set -euo pipefail
+          chmod +x builder-tools/builder/build-freetype.sh
+          builder-tools/builder/build-freetype.sh aarch64-linux-musl "$GITHUB_WORKSPACE/console-src"
 
-      - name: Build Recovery Console
+      - name: Build Albus Recovery Console
         shell: bash
         run: |
           set -euo pipefail
           cd console-src
           make clean
-          make '${{ steps.cfg.outputs.architecture }}' V=1
-          BIN="output/recovery-console-${{ steps.cfg.outputs.architecture }}"
+          make aarch64 V=1
+          BIN=output/recovery-console-aarch64
           test -s "$BIN"
           chmod 0755 "$BIN"
           file "$BIN"
-          sha256sum "$BIN"
-
-      - name: Prepare base recovery image
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p input
-          URL='${{ steps.cfg.outputs.recovery_url }}'
-          PATH_IN='${{ steps.cfg.outputs.recovery_path }}'
-          EXPECTED='${{ steps.cfg.outputs.recovery_sha256 }}'
-
-          if [ -n "$URL" ]; then
-            curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 \
-              -o input/recovery.img "$URL"
-          else
-            test -f "$PATH_IN"
-            cp "$PATH_IN" input/recovery.img
-          fi
-
-          test -s input/recovery.img
-          file input/recovery.img || true
-          ACTUAL=$(sha256sum input/recovery.img | awk '{print $1}')
-          echo "Base recovery SHA-256: $ACTUAL"
-          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "ERROR: base recovery SHA-256 mismatch" >&2
+          if readelf -l "$BIN" | grep -q 'Requesting program interpreter'; then
+            echo "ERROR: recovery-console must be static" >&2
             exit 1
           fi
+          sha256sum "$BIN"
 
-      - name: Install magiskboot
+      - name: Install pinned magiskboot
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p tools
-          MAGISK_URL='${{ steps.cfg.outputs.magisk_apk_url }}'
-          if [ -z "$MAGISK_URL" ]; then
-            MAGISK_URL=$(curl -fsSL https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
-              | jq -r '.assets[] | select(.name | test("^Magisk-v.*\\.apk$")) | .browser_download_url' \
-              | head -n1)
-          fi
-          [ -n "$MAGISK_URL" ] && [ "$MAGISK_URL" != "null" ]
-          echo "Magisk APK: $MAGISK_URL"
-          curl -fL --retry 3 --retry-delay 2 -o tools/Magisk.apk "$MAGISK_URL"
-          unzip -p tools/Magisk.apk lib/x86_64/libmagiskboot.so > tools/magiskboot
+          curl -fL --retry 3 --retry-delay 2             -o "tools/Magisk-v$MAGISK_VERSION.apk"             "https://github.com/topjohnwu/Magisk/releases/download/v$MAGISK_VERSION/Magisk-v$MAGISK_VERSION.apk"
+          echo "$MAGISK_APK_SHA256  tools/Magisk-v$MAGISK_VERSION.apk" | sha256sum -c -
+          unzip -p "tools/Magisk-v$MAGISK_VERSION.apk"             lib/x86_64/libmagiskboot.so > tools/magiskboot
           chmod 0755 tools/magiskboot
-          test -x tools/magiskboot
-          test -s tools/magiskboot
+          echo "$MAGISKBOOT_SHA256  tools/magiskboot" | sha256sum -c -
 
-      - name: Integrate Recovery Console into recovery image
+      - name: Integrate upstream permanent Recovery Console
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x builder/integrate-recovery.sh
-          mkdir -p dist
-          OUT="dist/${{ steps.cfg.outputs.output_prefix }}-${{ steps.cfg.outputs.architecture }}-${{ matrix.name }}.img"
-          builder/integrate-recovery.sh \
-            tools/magiskboot \
-            input/recovery.img \
-            "console-src/output/recovery-console-${{ steps.cfg.outputs.architecture }}" \
-            "$OUT" \
-            '${{ steps.cfg.outputs.seclabel }}'
+          BASE="base-artifact/albus-base/artifacts/recovery.img"
+          OUTDIR="dist"
+          OUT="$OUTDIR/recovery-albus-console-upstream-permanent-${{ matrix.orientation }}.img"
+          mkdir -p "$OUTDIR"
+          chmod +x builder-tools/builder/integrate-recovery.sh
 
-          cat > "dist/BUILD-INFO-${{ matrix.name }}.txt" <<EOF
-          Recovery Console source ref: ${{ steps.cfg.outputs.source_ref }}
-          Architecture: ${{ steps.cfg.outputs.architecture }}
+          builder-tools/builder/integrate-recovery.sh             tools/magiskboot             "$BASE"             console-src/output/recovery-console-aarch64             "$OUT"             'u:r:recovery:s0'
+
+          test -s "$OUT"
+          [ "$(dd if="$OUT" bs=1 count=8 status=none)" = "ANDROID!" ]
+          SIZE=$(stat -c '%s' "$OUT")
+          [ "$SIZE" -le "$ALBUS_RECOVERY_LIMIT" ]
+
+      - name: Prove kernel and DT stayed identical
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$GITHUB_WORKSPACE/base-artifact/albus-base/artifacts/recovery.img"
+          FINAL="$GITHUB_WORKSPACE/dist/recovery-albus-console-upstream-permanent-${{ matrix.orientation }}.img"
+          mkdir -p verify/base verify/final
+          ( cd verify/base; "$GITHUB_WORKSPACE/tools/magiskboot" unpack -n "$BASE" >/dev/null )
+          ( cd verify/final; "$GITHUB_WORKSPACE/tools/magiskboot" unpack -n "$FINAL" >/dev/null )
+          cmp -s verify/base/kernel verify/final/kernel || {
+            echo "ERROR: kernel changed" >&2
+            exit 1
+          }
+          if [ -f verify/base/extra ] || [ -f verify/final/extra ]; then
+            test -f verify/base/extra
+            test -f verify/final/extra
+            cmp -s verify/base/extra verify/final/extra || {
+              echo "ERROR: DT/extra changed" >&2
+              exit 1
+            }
+          fi
+          echo "Kernel unchanged"
+          echo "DT/extra unchanged"
+
+      - name: Prepare Albus artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="dist/recovery-albus-console-upstream-permanent-${{ matrix.orientation }}.img"
+          cp console-src/output/recovery-console-aarch64             "dist/recovery-console-albus-aarch64-${{ matrix.orientation }}"
+          cp base-artifact/albus-base/artifacts/build-info.txt dist/KNOWN-GOOD-BASE.txt
+          cat > "dist/BUILD-INFO-${{ matrix.orientation }}.txt" <<EOF
+          Device: Motorola Moto Z2 Play (albus)
+          Branch: Albus-Recovery-Image-Builder
+          Source profile: Albus-Configs
+          Artifact type: recovery.img
+          Known-good builder snapshot: $ALBUS_BASE_BUILDER_COMMIT
+          Kernel commit: $ALBUS_KERNEL_COMMIT
+          TWRP base: $ALBUS_TWRP_FILE
+          TWRP SHA-256: $ALBUS_TWRP_SHA256
+          Architecture: aarch64
+          Orientation: ${{ matrix.orientation }}
           ROTATION=${{ matrix.rotation }}
-          Orientation=${{ matrix.degrees }} clockwise
-          Base recovery URL: ${{ steps.cfg.outputs.recovery_url }}
-          Base recovery path: ${{ steps.cfg.outputs.recovery_path }}
-          Service autostart: disabled
-          SELinux seclabel: ${{ steps.cfg.outputs.seclabel }}
+          Console path: /system/bin/recovery-console
+          Integration: upstream README permanent init.rc method
+          Stock recovery service: disabled
+          Recovery Console autostart: YES
+          Ramdisk compression: LZMA preserved
+          Kernel changed by integration: NO
+          DT changed by integration: NO
           EOF
-
           sha256sum "$OUT" > "$OUT.sha256"
-          ls -lh dist/
+          sha256sum "dist/recovery-console-albus-aarch64-${{ matrix.orientation }}"             > "dist/recovery-console-albus-aarch64-${{ matrix.orientation }}.sha256"
 
-      - name: Upload integrated recovery image
+      - name: Upload flashable Albus recovery
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.cfg.outputs.output_prefix }}-${{ steps.cfg.outputs.architecture }}-${{ matrix.name }}
+          name: albus-recovery-console-upstream-permanent-${{ matrix.orientation }}
           path: |
             dist/*.img
-            dist/*.sha256
+            dist/*.img.sha256
+            dist/recovery-console-albus-aarch64-*
+            dist/recovery-console-albus-aarch64-*.sha256
             dist/BUILD-INFO-*.txt
+            dist/KNOWN-GOOD-BASE.txt
           if-no-files-found: error
           compression-level: 0
+          retention-days: 30
