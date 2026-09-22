@@ -1,26 +1,22 @@
-name: Recovery Console CI
-run-name: ${{ github.event.head_commit.message || format('Release {0}', github.event.inputs.tag_name) || github.workflow }}
+name: Channel Binary CI
 
 on:
   push:
-    branches: [ "main", "master", "Albus-Configs", "Channel-Configs" ]
-  pull_request:
-    branches: [ "main", "master" ]
+    branches: ["Channel-Configs"]
+    paths:
+      - "Makefile"
+      - "*.c"
+      - "include/**"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
   workflow_dispatch:
-    inputs:
-      create_release:
-        description: 'Create an Official GitHub Release?'
-        required: true
-        type: boolean
-        default: false
-      tag_name:
-        description: 'Tag name (Only used if Release is checked)'
-        required: false
-        default: 'test'
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    name: Channel aarch64 - rot${{ matrix.rotation }} (${{ matrix.degrees }})
+    name: Channel aarch64 - ${{ matrix.orientation }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -28,136 +24,85 @@ jobs:
         include:
           - rotation: 0
             degrees: 0deg
+            orientation: portrait-0
           - rotation: 1
             degrees: 90deg
+            orientation: landscape-90
           - rotation: 2
             degrees: 180deg
+            orientation: portrait-180
           - rotation: 3
             degrees: 270deg
+            orientation: landscape-270
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Select Channel Rotation
-      run: |
-        set -euxo pipefail
-        sed -i "s/^#define CHANNEL_ROTATION 0$/#define CHANNEL_ROTATION ${{ matrix.rotation }}/" include/config.h
-        grep -E '^#define (CHANNEL_ROTATION|ROTATION)' include/config.h
-        echo "Building Channel ROTATION=${{ matrix.rotation }} (${{ matrix.degrees }})"
+      - name: Select Channel rotation
+        run: |
+          set -euxo pipefail
+          sed -i "s/^#define CHANNEL_ROTATION 0$/#define CHANNEL_ROTATION ${{ matrix.rotation }}/" include/config.h
+          grep -E '^#define (CHANNEL_ROTATION|ROTATION)' include/config.h
 
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y build-essential wget curl tree xxd
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl file xxd
 
-    - name: Download aarch64 Toolchain
-      run: |
-        set -euxo pipefail
-        mkdir -p "$HOME/toolchains"
-        cd "$HOME/toolchains"
-        BASE_URL="https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers"
-        wget --tries=3 --timeout=30 "$BASE_URL/aarch64-linux-musl-cross.tar.gz"
-        tar -xzf aarch64-linux-musl-cross.tar.gz
-        test -x "$HOME/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
-        "$HOME/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" --version
+      - name: Download aarch64 musl toolchain
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/toolchains"
+          cd "$HOME/toolchains"
+          curl -fL --retry 3 --retry-delay 2             -o aarch64-linux-musl-cross.tar.gz             "https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers/aarch64-linux-musl-cross.tar.gz"
+          tar -xzf aarch64-linux-musl-cross.tar.gz
+          "$HOME/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" --version
 
-    - name: Build FreeType (aarch64)
-      run: ./scripts/build-freetype.sh aarch64-linux-musl
+      - name: Build FreeType
+        run: ./scripts/build-freetype.sh aarch64-linux-musl
 
-    - name: Build Recovery Console (aarch64, rot${{ matrix.rotation }})
-      run: make aarch64 V=1
+      - name: Build static Recovery Console
+        run: |
+          set -euxo pipefail
+          make clean
+          make aarch64 V=1
+          BIN=output/recovery-console-aarch64
+          test -s "$BIN"
+          file "$BIN"
+          file "$BIN" | grep -Eq 'ELF 64-bit.*(ARM aarch64|AArch64)'
+          if readelf -l "$BIN" | grep -q 'Requesting program interpreter'; then
+            echo "ERROR: Channel binary must be static" >&2
+            exit 1
+          fi
+          sha256sum "$BIN"
 
-    - name: Verify Binary
-      run: |
-        set -euxo pipefail
-        test -s output/recovery-console-aarch64
-        file output/recovery-console-aarch64
-        sha256sum output/recovery-console-aarch64
-        grep -q "#define CHANNEL_ROTATION ${{ matrix.rotation }}" include/config.h
+      - name: Package binary
+        run: |
+          set -euxo pipefail
+          mkdir -p dist package
+          NAME="recovery-console-channel-aarch64-${{ matrix.orientation }}"
+          cp output/recovery-console-aarch64 "package/$NAME"
+          cat > package/BUILD-INFO.txt <<EOF
+          Device: Motorola Moto G7 Play (channel)
+          Branch: Channel-Configs
+          Artifact type: standalone Recovery Console binary
+          Architecture: aarch64
+          Backend: Qualcomm MDSS FBDEV
+          Framebuffer: /dev/graphics/fb0
+          Physical display: 720x1512
+          Rotation: ${{ matrix.rotation }}
+          Orientation: ${{ matrix.orientation }}
+          Recovery image included: NO
+          EOF
+          tar -czf "dist/${NAME}.tar.gz" -C package "$NAME" BUILD-INFO.txt
+          sha256sum "dist/${NAME}.tar.gz" > "dist/${NAME}.tar.gz.sha256"
 
-    - name: Package Channel Rotation Artifact
-      run: |
-        set -euxo pipefail
-        VERSION=$(grep -oP 'VERSION\s+"\K[^"]+' include/config.h)
-        ROT="rot${{ matrix.rotation }}-${{ matrix.degrees }}"
-        BIN_NAME="recovery-console-channel-aarch64-${ROT}"
-        TAR_NAME="recovery-console-${VERSION}-aarch64-${ROT}.tar.gz"
-        mkdir -p dist package
-        cp output/recovery-console-aarch64 "package/$BIN_NAME"
-        printf '%s\n' \
-          "Device: Moto G7 Play (channel)" \
-          "Architecture: aarch64" \
-          "Display: Qualcomm MDSS FBDEV, 720x1512" \
-          "ROTATION=${{ matrix.rotation }}" \
-          "Orientation=${{ matrix.degrees }} clockwise" \
-          > "package/BUILD-INFO.txt"
-        tar -czf "dist/$TAR_NAME" -C package "$BIN_NAME" BUILD-INFO.txt
-        echo "TAR_FILE=dist/$TAR_NAME" >> "$GITHUB_ENV"
-        ls -lh "dist/$TAR_NAME"
-        tar -tzf "dist/$TAR_NAME"
-
-    - name: Upload Rotation Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: recovery-console-channel-aarch64-rot${{ matrix.rotation }}-${{ matrix.degrees }}
-        path: dist/*.tar.gz
-        if-no-files-found: error
-
-  release:
-    name: Create GitHub Release
-    needs: [build]
-    if: |
-      github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.create_release == 'true' &&
-      github.event.inputs.tag_name != '' &&
-      github.event.inputs.tag_name != 'test'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Download Artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: release-assets
-        merge-multiple: true
-
-    - name: Generate Changelog
-      id: changelog
-      run: |
-        PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-        echo "Previous tag: $PREV_TAG"
-        if [ -z "$PREV_TAG" ]; then
-          CHANGELOG=$(git log --oneline --pretty=format:"* %s (%h)")
-        else
-          CHANGELOG=$(git log ${PREV_TAG}..HEAD --oneline --pretty=format:"* %s (%h)")
-        fi
-        {
-          echo "notes<<EOF"
-          echo "$CHANGELOG"
-          echo "EOF"
-        } >> "$GITHUB_OUTPUT"
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ github.event.inputs.tag_name }}
-        name: Recovery Console ${{ github.event.inputs.tag_name || 'Development Build' }}
-        target_commitish: ${{ github.sha }}
-        body: |
-          ## What's Changed
-          ${{ steps.changelog.outputs.notes }}
-
-          ## Channel rotation variants
-          - rot0 = 0 degrees
-          - rot1 = 90 degrees clockwise
-          - rot2 = 180 degrees
-          - rot3 = 270 degrees clockwise
-
-          ---
-          **Automated Release by Recovery Console CI**
-        files: |
-          release-assets/*.tar.gz
+      - name: Upload normal binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-console-channel-aarch64-${{ matrix.orientation }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30

@@ -1,140 +1,108 @@
-# Recovery Console
+# Recovery Console — Moto G7 Play (channel)
 
-### Quick Navigation
+Device-specific Recovery Console profile for the Motorola Moto G7 Play (`channel`).
 
-- [Features](#features)
-- [Gallery](#gallery)
-- [Hardware Requirements](#no-universal-build)
-- [Customization Guide](#customization-guide)
-- [Usage & Integration](#usage-integration)
-  - [Safety Warning](#critical-the-suicide-trap)
-  - [Recommended Execution](#recommended-execution-methods)
-    - [ADB Method](#adb-method)
-    - [Init Integration](#init-rc-method)
-- [SELinux & Permissions](#selinux-permissions)
-- [Droidspaces Integration](#droidspaces-container-booting)
-- [Cooking (Installation)](#cooking)
-- [Credits](#credits-acknowledgments)
-- [Disclaimer](#disclaimer)
+This branch is intentionally limited to the **Recovery Console source/configuration and normal aarch64 binaries**. It does not build, patch, or publish recovery images.
 
-A complete replacement for the standard Android Recovery UI. It provides a robust terminal environment allowing users to access an interactive shell or boot full Linux distributions via [Droidspaces](https://github.com/ravindu644/Droidspaces-OSS).
+## Repository layout
 
-<a id="features"></a>
-### Key Features
+The Channel work is split into two independent branches:
 
-- **Backends**: Supports both modern Atomic DRM and legacy Framebuffer.
-- **VT Aware**: Supports Virtual Terminals (Wayland/X11 co-existence), though stability varies by vendor DRM implementation.
-- **Power Management**: Automatic display sleep and manual power-off via Power Key.
-- **Intuitive Controls**: Volume buttons for scrolling and full physical keyboard support.
-- **Low-Level**: Operates directly on top of the kernel, independent of Android framework services.
+- **`Channel-Configs`** — this branch. Device configuration, source and normal Recovery Console binary builds.
+- **`Channel-Recovery-Image-Builder`** — recovery-as-boot/TWRP installer builder. It consumes `Channel-Configs` and produces the permanent recovery installer ZIP.
 
-<a id="gallery"></a>
-## 🖼️ Gallery
+The repository `main` branch remains generic and is not used as a Channel dispatcher.
 
-<details>
-<summary><b>View Project's Screenshots (Linux & Android)</b></summary>
+## Device profile
 
-<table align="center">
-  <tr valign="top">
-    <td colspan="2" align="center">
-      <b>Love fastfetch ?</b><br>
-      <i>Droidspaces Ubuntu + Recovery Console (DRM)</i><br>
-      <img src="gallery/droidspaces-drm-ubuntu.jpg" width="95%"><br><br>
-    </td>
-  </tr>
-  <tr valign="top">
-    <td align="center" width="50%">
-      <b>Systemd Boot</b><br>
-      <i>External Keyboard + DRM</i><br>
-      <img src="gallery/systemd-with-keyboard-drm.jpg" width="95%">
-    </td>
-    <td align="center" width="50%">
-      <b>XFCE Desktop</b><br>
-      <i>Traditional Framebuffer</i><br>
-      <img src="gallery/x11-xfce-fb.jpg" width="95%">
-    </td>
-  </tr>
-  <tr valign="top">
-    <td align="center" width="50%">
-      <b>Interactive Shell</b><br>
-      <i>ASCII Art Demonstration</i><br>
-      <img src="gallery/direct-shell-chill-guy-ascii-art.jpg" width="95%">
-    </td>
-    <td align="center" width="50%">
-      <b>Systemd Logs</b><br>
-      <i>Legacy FBdev Rendering</i><br>
-      <img src="gallery/systemd-with-fb.jpg" width="95%">
-    </td>
-  </tr>
-</table>
+Validated on a Moto G7 Play running TWRP 3.5.2_10-0.
 
-</details>
+| Item | Channel value |
+| --- | --- |
+| Architecture | aarch64 |
+| Display backend | legacy Qualcomm MDSS FBDEV |
+| Primary framebuffer | `/dev/graphics/fb0` |
+| FB device | major 29, minor 0 |
+| Driver | `mdssfb_80000` |
+| Physical panel | 720 × 1512 |
+| Virtual framebuffer | 720 × 3024 |
+| Bits per pixel | 32 |
+| Stride | 2944 bytes |
+| Kernel-reported rotation | 0 |
+| Backlight | `/sys/class/leds/lcd-backlight/brightness` |
+| Backlight maximum | 255 |
+| Recovery shell | `/bin/sh` |
+| TWRP safe-area top offset | 53 px |
+| Recovery Console socket | `/tmp/rc.sock` |
 
-<a id="no-universal-build"></a>
-## ⚠️ No Universal Build!
+The 720×3024 virtual framebuffer is consistent with two vertically stacked 720×1512 pages. The Recovery Console uses the real framebuffer stride reported by the kernel.
 
-This project is **not universal**. Because Android kernels vary wildly in how they handle display hardware (DRM vs FBdev), backlight sysfs paths, screen rotations, and notches, you **must fork this repository** and customize it for your specific device.
+The tested recovery exposes FBDEV and no usable `/dev/dri/card*`, so Channel keeps the upstream DRM probe harmless and falls back to FBDEV.
 
-<a id="customization-guide"></a>
-### Customization Guide
+## Channel configuration
 
-All device-specific logic is centralized in [`include/config.h`](./include/config.h). Before building, you must edit this file to match your hardware:
+The device-specific settings live in `include/config.h`.
 
-1.  **Backlight**: Update `BACKLIGHT_PATH` to your kernel's brightness control file.
-2.  **Display**: Adjust `ROTATION` (0-3) and `MARGIN_TOP`/`BOTTOM`/`LEFT`/`RIGHT` to handle notches or UI safe areas.
-3.  **Color Mode**: Toggle `COLOR_BGR` if your display colors appear swapped.
-4.  **Backend**: The console will try [Atomic KMS](https://en.wikipedia.org/wiki/Direct_Rendering_Manager#Atomic_Display_Framework) first and fall back to legacy FrameBuffer (`/dev/fb0`) if needed.
+Important values:
 
-<a id="usage-integration"></a>
+```c
+#define FONT_SIZE 22
+#define MARGIN_TOP 53
+#define MARGIN_BOTTOM 0
+#define MARGIN_LEFT 10
+#define MARGIN_RIGHT 10
 
-## 🚀 Usage & Integration
+#define FB_DEVICE "/dev/graphics/fb0"
+#define FB_MAJOR 29
+#define FB_MINOR 0
 
-### Command Line Arguments
+#define DEFAULT_SHELL "/bin/sh"
 
-- `--background`: Spawns the console as a background daemon.
-- `--attach`: Connects to an already running background session (useful for ADB).
-- `--exec <cmd>`: Runs a specific command or script instead of the default shell.
-- `--help`: Shows basic CLI usage.
-
-<a id="critical-the-suicide-trap"></a>
-### ⚠️ Critical: The "Suicide" Trap
-
-**Do not run this binary directly from a terminal emulator inside TWRP/Recovery.**
-
-By design, `recovery-console` stops the standard recovery services (`stop recovery`) to take control of the display. If you run it from a terminal that is itself a child of the recovery process (like TWRP's built-in terminal), you will trigger a "suicide" loop:
-1. The console kills the recovery process.
-2. The recovery process kills its children (including your terminal).
-3. Your terminal kills the console.
-4. The display goes completely blank.
-
-<a id="recommended-execution-methods"></a>
-### Recommended Execution Methods
-
-<a id="adb-method"></a>
-#### 1. The ADB Method (Recommended for Testing)
-Always use the `--background` flag when starting from an `adb shell`. This persists the session even if the shell disconnects.
-```bash
-# Start the daemon
-/path/to/recovery-console --background
-
-# Attach to the session
-/path/to/recovery-console --attach
+#define BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
+#define BACKLIGHT_VAL 255
 ```
 
-<a id="init-rc-method"></a>
+Four rotation variants are supported:
 
-#### 2. The `init.rc` Method (Permanent Integration)
-For a permanent setup, you must disable the stock recovery service and wire the console into your ramdisk's `init.rc`.
+- `portrait-0` → rotation 0 / 0°
+- `landscape-90` → rotation 1 / 90° clockwise
+- `portrait-180` → rotation 2 / 180°
+- `landscape-270` → rotation 3 / 270° clockwise
 
-**A) Disable Stock Recovery:**
+Because the physical display was removed during validation, framebuffer operation was verified through recovery/ADB/kernel state, but final visual color order and preferred physical orientation still require a connected panel.
+
+## Components used
+
+The Channel implementation is built from the following pieces:
+
+- **Recovery Console upstream:** `Droidspaces/recovery-console`
+- **Device profile:** this `Channel-Configs` branch
+- **Compiler:** aarch64 musl cross-toolchain from Droidspaces OSS releases
+- **Font renderer:** statically linked FreeType
+- **Recovery base:** official TeamWin `twrp-installer-3.5.2_10-0-channel.zip`
+- **Recovery layout:** recovery-as-boot / A/B
+- **Installer logic:** the original TeamWin `META-INF/com/google/android/update-binary`
+- **Ramdisk tool:** `magiskboot`
+- **Permanent integration path:** the upstream Recovery Console README `init.rc` method
+- **Console path inside recovery:** `/system/bin/recovery-console`
+
+The recovery-image branch preserves the TeamWin installer behavior: it reads each installed `boot_a` and `boot_b`, replaces the recovery ramdisk, repacks the existing boot image, and writes it back. Kernel, DTB and boot header come from the device's installed boot images rather than being replaced with unrelated copies.
+
+## Permanent integration
+
+The recovery image builder follows the official Recovery Console permanent-integration layout.
+
+The original stock TWRP service remains in its original init file and receives `disabled`:
+
 ```rc
 service recovery /system/bin/recovery
     socket recovery stream 422 system system
     seclabel u:r:recovery:s0
-    disabled  # <--- Crucial
+    disabled
 ```
 
-**B) Define Console Service:**
+The Recovery Console service and boot trigger are placed in the ramdisk root `/init.rc`:
+
 ```rc
 service recovery-console /system/bin/recovery-console
     user root
@@ -147,102 +115,131 @@ on boot
     start recovery-console
 ```
 
-<a id="selinux-permissions"></a>
-### 🛡️ SELinux & Permissions
+The service itself is marked `disabled` so Android init does not class-start it independently; the explicit `on boot` action starts it once.
 
-If your kernel is SELinux enforcing, you must patch the recovery policy to be **permissive**. You can use `magiskpolicy` to patch the `sepolicy` file in your ramdisk:
+The tested TWRP ramdisk already places recovery SELinux in permissive mode during `early-init`, so the builder does not inject an additional SELinux policy rewrite.
 
-```bash
-./magiskpolicy --load sepolicy --save sepolicy.patched '
-allow adbd adbd process setcurrent
-allow adbd su process dyntransition
-permissive { adbd }
-permissive { su }
-permissive { recovery }
-'
+## Expected boot behavior
+
+With the permanent installer flashed:
+
+```text
+Android
+  ↓
+reboot recovery
+  ↓
+recovery init
+  ↓
+stock TWRP service remains stopped
+  ↓
+recovery-console starts automatically
+  ↓
+framebuffer terminal becomes the recovery UI
 ```
 
-<a id="droidspaces-container-booting"></a>
-### 📦 Droidspaces Container Booting
+No `start recovery-console` command and no ADB `--attach` are required for the console itself to start.
 
-The console can act as a display server for full Linux containers. The recommended way is to start the `droidspaces` daemon first, then launch the container via a wrapper script passed to `--exec`.
+`--attach` is only a remote client for the already running console session:
 
-**Wrapper Script (`boot-ubuntu.sh`):**
-```shell
-#!/system/bin/sh
-
-# Core binary paths
-DROIDSPACES_BINARY_PATH=/system/bin/droidspaces
-RECOVERY_CONSOLE_PATH=/system/bin/recovery-console
-
-# Container properties
-CONTAINER_NAME="Ubuntu 24.04"
-CONTAINER_HOSTNAME=ubuntu
-DS_FLAGS="--hw-access --privileged=full -B /tmp:/recovery --foreground"
-
-# Rootfs path. Accepts only .img files or raw
-# block devices like /dev/block/* (SD cards, partitions).
-# If you want to use a directory-based rootfs, simply change
-# -i ${ROOTFS_PATH} to -r ${ROOTFS_PATH} in the main command.
-ROOTFS_PATH=/dev/block/mmcblk0p1
-
-# Main execution
-exec ${RECOVERY_CONSOLE_PATH} \
-    --exec "${DROIDSPACES_BINARY_PATH} -i ${ROOTFS_PATH} -n \"${CONTAINER_NAME}\" -h \"${CONTAINER_HOSTNAME}\" ${DS_FLAGS} start"
+```sh
+/system/bin/recovery-console --attach
 ```
 
-**Integration `init.rc`:**
+This is useful on a device with no screen, but is not part of the permanent boot requirement.
+
+## On-device validation
+
+The permanent Channel build was validated on the real device after installing the native TWRP ZIP and rebooting to recovery.
+
+Immediately after boot:
+
+```text
+CONSOLE=running
+TWRP=stopped
+ADBD=running
+```
+
+The process list showed both `recovery-console` and `adbd` alive.
+
+The installed binary and socket were present:
+
+```text
+/system/bin/recovery-console
+/tmp/rc.sock
+```
+
+The live ramdisk showed the permanent service in `/init.rc` and the stock `service recovery` marked `disabled`.
+
+ADB attach connected successfully to the running session:
+
+```text
+channel:/ # echo CHANNEL_CONSOLE_OK
+CHANNEL_CONSOLE_OK
+channel
+running
+stopped
+```
+
+Kernel logs also confirmed:
+
+- `fb0` registered as 720×1512;
+- `/system/bin/recovery-console` executed during recovery boot;
+- the MDSS panel/display path was brought up by the console;
+- ADB USB configuration completed while the console remained active.
+
+### Exiting the console
+
+Typing `exit` inside the attached shell exits the **main PTY shell**, not merely the ADB viewer.
+
+That intentionally reaches the upstream Recovery Console cleanup path, which executes:
+
+```text
+start recovery
+```
+
+The on-device log confirmed that sequence: the console removed `/tmp/rc.sock`, Android init received `start recovery`, the Recovery Console exited with status 0, and TWRP started.
+
+So:
+
+- closing/disconnecting the ADB client leaves the permanent console alive;
+- sending `exit` to the console shell intentionally hands control back to TWRP.
+
+## Root requirements
+
+Recovery Console does **not** depend on Magisk or KernelSU for runtime privilege.
+
+Android init launches the recovery service as:
+
 ```rc
-service droidspacesd /system/bin/droidspaces daemon --foreground
-    user root
-    group root
-    disabled
-    seclabel u:r:recovery:s0
-
-service ubuntu-container /system/bin/sh /system/bin/boot-ubuntu.sh
-    user root
-    group root
-    oneshot
-    disabled
-    seclabel u:r:recovery:s0
-
-on boot
-    start droidspacesd
-
-on property:init.svc.droidspacesd=running
-    start ubuntu-container
+user root
+group root
 ```
 
-<a id="cooking"></a>
-## 🍳 Cooking
+The validation kernel happened to contain KernelSU, which logged execution of `/system/bin/recovery-console`, but KernelSU was not responsible for starting or granting root to the service.
 
-Once you have customized `config.h`, you can use the built-in GitHub CI to "cook" your binaries:
+## Normal binary builds
 
-1.  **Fork** this repository.
-2.  **Commit** your changes to `include/config.h`.
-3.  Go to the **Actions** tab in your fork.
-4.  Select the **Recovery Console CI** workflow.
-5.  Click **Run workflow**, toggle **Create an Official GitHub Release**, and provide a tag name (e.g., `v1.0.0`).
-6.  The CI will cross-compile for four architectures (`aarch64`, `armhf`, `x86_64`, `x86`) and upload a versioned tarball to your Releases.
+The workflow stored in this branch builds only the normal Channel binaries. It does not create a recovery image.
 
-<a id="credits-acknowledgments"></a>
-## 💎 Credits & Acknowledgments
+A push to `Channel-Configs` builds all four orientations and uploads a tarball for each variant.
 
-This project stands on the shoulders of several incredible open-source projects:
+Artifacts contain:
 
-*   **[yaft (yet another framebuffer terminal)](https://github.com/uobikiemukot/yaft)**: The project's core foundation and framebuffer rendering logic.
-*   **[st (simple terminal)](https://st.suckless.org/)**: The cursor engine and deferred-wrap logic.
-*   **[TWRP (TeamWin Recovery Project)](https://twrp.me/)**: Display power management and DRM kickstart logic.
-*   **[JetBrains Mono](https://www.jetbrains.com/lp/mono/)**: The default font, licensed under the [SIL Open Font License 1.1](https://openfontlicense.org).
-*   **[FreeType](https://www.freetype.org/)**: Statically-linked font rendering engine.
-*   **[Droidspaces](https://github.com/ravindu644/Droidspaces-OSS)**: For the cross-compilation toolchain and CI infrastructure.
+```text
+recovery-console-channel-aarch64-portrait-0
+recovery-console-channel-aarch64-landscape-90
+recovery-console-channel-aarch64-portrait-180
+recovery-console-channel-aarch64-landscape-270
+```
 
----
+For a flashable permanent recovery installer, use the **`Channel-Recovery-Image-Builder`** branch instead.
 
-<a id="disclaimer"></a>
-### 🛠️ Disclaimer
+## Upstream project
 
-This is a **fun project** and not a professional, production-ready tool. It was built with **heavy AI involvement** and may contain bugs, edge cases, or broken implementations on certain hardware. Use it at your own risk!
+Recovery Console provides framebuffer/DRM terminal rendering, physical-key input, terminal emulation, ADB attach support and recovery lifecycle handling.
 
----
-*Created with ❤️ for the Linux on Android Community.*
+Upstream project:
+
+`Droidspaces/recovery-console`
+
+This Channel branch only carries the device-specific configuration and validation required for the Moto G7 Play.
