@@ -59,6 +59,86 @@ static void replay_send(int fd) {
   }
 }
 
+/*
+ * PTY output is interpreted by the built-in terminal before it is mirrored to
+ * --attach clients. DSR queries (CSI 5 n / CSI 6 n) belong to that terminal:
+ * term_write() consumes them and writes the reply back to the PTY. Forwarding
+ * the same query to an attached host terminal can create a second CPR reply,
+ * and replaying an old query can trigger one again after reconnect.
+ *
+ * Keep a tiny stateful filter so split reads are handled correctly. Only the
+ * two DSR queries owned by the internal terminal are removed; every other byte
+ * remains untouched.
+ */
+static uint8_t g_forward_pending[3];
+static size_t g_forward_pending_len = 0;
+
+static void forward_filter_byte(uint8_t ch, uint8_t *out, size_t *out_len) {
+retry:
+  if (g_forward_pending_len == 0) {
+    if (ch == 0x1b) {
+      g_forward_pending[0] = ch;
+      g_forward_pending_len = 1;
+    } else {
+      out[(*out_len)++] = ch;
+    }
+    return;
+  }
+
+  if (g_forward_pending_len == 1) {
+    if (ch == '[') {
+      g_forward_pending[1] = ch;
+      g_forward_pending_len = 2;
+      return;
+    }
+    out[(*out_len)++] = g_forward_pending[0];
+    g_forward_pending_len = 0;
+    goto retry;
+  }
+
+  if (g_forward_pending_len == 2) {
+    if (ch == '5' || ch == '6') {
+      g_forward_pending[2] = ch;
+      g_forward_pending_len = 3;
+      return;
+    }
+    out[(*out_len)++] = g_forward_pending[0];
+    out[(*out_len)++] = g_forward_pending[1];
+    g_forward_pending_len = 0;
+    goto retry;
+  }
+
+  if (ch == 'n') {
+    /* Internal terminal already handled CSI 5n / CSI 6n. Drop the mirror. */
+    g_forward_pending_len = 0;
+    return;
+  }
+
+  out[(*out_len)++] = g_forward_pending[0];
+  out[(*out_len)++] = g_forward_pending[1];
+  out[(*out_len)++] = g_forward_pending[2];
+  g_forward_pending_len = 0;
+  goto retry;
+}
+
+static void forward_pty_output(const uint8_t *data, size_t n, int cli_fd,
+                               bool mirror_stdout) {
+  uint8_t out[IO_BUFSZ + 3];
+  size_t out_len = 0;
+
+  for (size_t i = 0; i < n; i++)
+    forward_filter_byte(data[i], out, &out_len);
+
+  if (out_len == 0)
+    return;
+
+  replay_append(out, out_len);
+  if (mirror_stdout)
+    (void)write(STDOUT_FILENO, out, out_len);
+  if (cli_fd >= 0)
+    (void)write(cli_fd, out, out_len);
+}
+
 /*  Saved tty state  */
 static struct termios g_saved_tio;
 static bool g_tio_saved = false;
@@ -460,6 +540,27 @@ int main(int argc, char **argv) {
     if (in.rescan_at_ms && now >= in.rescan_at_ms)
       input_rescan(&in);
 
+    /*
+     * PTY output has priority over attach input. BusyBox ash asks for cursor
+     * position with CSI 6n while drawing its prompt; answering that query before
+     * accepting the next client keystroke avoids its documented line-editor
+     * race where a late CPR becomes visible input.
+     */
+    if (FD_ISSET(pty_fd, &rfds)) {
+      uint8_t b[IO_BUFSZ];
+      ssize_t n = read(pty_fd, b, sizeof(b));
+      if (n > 0) {
+        term_write(&term, b, (int)n);
+        forward_pty_output(b, (size_t)n, cli_fd, is_service);
+        if (!is_blanked)
+          display_render(&disp, &term);
+      } else if (n == 0) {
+        goto pty_dead;
+      } else if (errno != EAGAIN && errno != EINTR) {
+        goto pty_dead;
+      }
+    }
+
     /*  Socket client input  */
     if (cli_fd >= 0 && FD_ISSET(cli_fd, &rfds)) {
       uint8_t b[IO_BUFSZ];
@@ -470,26 +571,6 @@ int main(int argc, char **argv) {
       } else {
         close(cli_fd);
         cli_fd = -1;
-      }
-    }
-
-    /*  PTY output → terminal emulator → render  */
-    if (FD_ISSET(pty_fd, &rfds)) {
-      uint8_t b[IO_BUFSZ];
-      ssize_t n = read(pty_fd, b, sizeof(b));
-      if (n > 0) {
-        term_write(&term, b, (int)n);
-        replay_append(b, (size_t)n);
-        if (!is_blanked)
-          display_render(&disp, &term);
-        if (is_service)
-          (void)write(STDOUT_FILENO, b, (size_t)n);
-        if (cli_fd >= 0)
-          (void)write(cli_fd, b, (size_t)n);
-      } else if (n == 0) {
-        goto pty_dead;
-      } else if (errno != EAGAIN && errno != EINTR) {
-        goto pty_dead;
       }
     }
 
