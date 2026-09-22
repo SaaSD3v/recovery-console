@@ -71,8 +71,9 @@
 #define CSI_PARAMS_MAX 16
 #define SOCKET_PATH "/tmp/rc.sock"
 
-/* Stable LCD backlight class node validated on-device. */
-#define BACKLIGHT_PATH "/sys/class/leds/lcd-backlight/brightness"
+/* Qualcomm MDSS primary LCD backlight path used by the Albus recovery. */
+#define BACKLIGHT_PATH                                                         \
+  "/sys/devices/soc/1a00000.qcom,mdss_mdp/1a00000.qcom,mdss_mdp:qcom,mdss_fb_primary/leds/lcd-backlight/brightness"
 #define BACKLIGHT_VAL 255
 
 #define LOG(fmt, ...)                                                          \
