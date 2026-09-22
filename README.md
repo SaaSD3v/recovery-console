@@ -75,6 +75,8 @@ So the profile uses:
 #define DEFAULT_SHELL "/sbin/sh"
 ```
 
+BusyBox cursor-position queries are handled by the internal terminal and are not mirrored into `--attach` or the replay buffer, preventing stray `^[[...R` cursor reports during attach/reconnect.
+
 ## Input
 
 Validated support for:
@@ -134,6 +136,7 @@ RGB/BGR framebuffer layout
 PTY shell
 Unix socket
 attach / reconnect
+BusyBox DSR / cursor report handling
 Power blank / wake
 60s display timeout
 Volume scrolling
