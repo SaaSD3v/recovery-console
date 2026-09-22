@@ -1,81 +1,149 @@
-# Recovery Console — Moto Z2 Play (albus)
+# Recovery Console — Moto Z2 Play (`albus`)
 
-Device-specific Recovery Console profile for the Motorola Moto Z2 Play (`albus`).
+Recovery Console port for the Motorola Moto Z2 Play (`albus`), adapted for the device's recovery environment.
 
-This branch owns only the **Recovery Console device configuration and normal aarch64 binaries**. Recovery images are built separately in `Albus-Recovery-Image-Builder`.
+## Configuration
 
-## Branch separation
+```c
+#define FONT_SIZE 22
 
-- **`Albus-Configs`** — this branch: source/config and standalone Recovery Console binaries.
-- **`Albus-Recovery-Image-Builder`** — known-good kernel/TWRP base plus permanent Recovery Console image integration.
+#define MARGIN_TOP 50
+#define MARGIN_BOTTOM 30
+#define MARGIN_LEFT 10
+#define MARGIN_RIGHT 10
 
-The repository `main` branch remains generic.
+#define DISPLAY_TIMEOUT 60
 
-## Albus profile
+#define COLOR_BGR 1
 
-| Item | Value |
-| --- | --- |
-| Architecture | aarch64 |
-| Display backend | Qualcomm MDSS FBDEV |
-| Primary framebuffer | `/dev/graphics/fb0` |
-| Physical panel profile | 1080 × 1920 |
-| Recovery shell | `/sbin/sh` → BusyBox |
-| Backlight | `/sys/devices/soc/1a00000.qcom,mdss_mdp/1a00000.qcom,mdss_mdp:qcom,mdss_fb_primary/leds/lcd-backlight/brightness` |
-| Backlight value | 255 |
-| Console socket | `/tmp/rc.sock` |
-| DRM | no recovery DRM/KMS path used |
+#define USE_SHADOW_BUFFER 1
+#define USE_CRTC_BLANK 0
 
-The device-specific settings live in `include/config.h`.
+#define FB_DEVICE "/dev/graphics/fb0"
+#define FB_DEVICE_ALT "/dev/fb0"
+#define FB_MAJOR 29
+#define FB_MINOR 0
 
-Four build orientations are available:
+#define DEFAULT_SHELL "/sbin/sh"
 
-- `portrait-0`
-- `landscape-90`
-- `portrait-180`
-- `landscape-270`
+#define BACKLIGHT_PATH \
+  "/sys/devices/soc/1a00000.qcom,mdss_mdp/1a00000.qcom,mdss_mdp:qcom,mdss_fb_primary/leds/lcd-backlight/brightness"
 
-## Normal binary CI
-
-A push to `Albus-Configs` builds four static aarch64 Recovery Console binaries, one for each orientation.
-
-These artifacts are **not recovery images**. For a flashable `recovery.img`, use `Albus-Recovery-Image-Builder`.
-
-## Permanent recovery integration
-
-The recovery-image branch follows the official Recovery Console permanent `init.rc` method:
-
-```rc
-service recovery-console /system/bin/recovery-console
-    user root
-    group root
-    oneshot
-    disabled
-    seclabel u:r:recovery:s0
-
-on boot
-    start recovery-console
+#define BACKLIGHT_VAL 255
 ```
 
-The original stock recovery service receives `disabled`.
+## Display
 
-Albus has one device-specific shell difference from the Channel profile: the known-good recovery ramdisk exposes `/sbin/sh` through BusyBox and does not provide the same `/bin/sh` layout, so `DEFAULT_SHELL` is `/sbin/sh`.
+Recovery uses FBDEV through the primary Qualcomm MDSS framebuffer:
 
-## Known-good recovery image path
+```text
+Driver:       mdssfb_90000
+Device:       /dev/graphics/fb0
+Resolution:   1080x1920
+Virtual:      1080x3840
+BPP:          32
+Stride:       4352
+Rotation:     0
+```
 
-The flashable image builder is intentionally pinned to the known-good Albus recipe:
+Pixel layout:
 
-- source snapshot: `SaaSD3v/albus-builder@a567dec13ee75bb50b0640525b20b5fc22ff6eac`
-- kernel: `SaaSD3v/android_kernel_motorola_msm8996`
-- kernel commit: `9a7416218ae637c4120c417b31428bb0747fdfdf`
-- TWRP base: `twrp-3.5.0_9-0-albus.img`
-- TWRP SHA-256: `4c42bfee165ea99e2663284a3634135786e157bd6cc492fcbe0d9bd3430e9261`
-- ramdisk compression: LZMA
-- image repack mode: `magiskboot unpack -n` / `repack -n`
+```text
+R: 0:8
+G: 8:8
+B: 16:8
+A: 24:8
+```
 
-The recovery builder rejects an image if the kernel or DT differs from the known-good base after Recovery Console integration.
+The Albus profile uses:
 
-## Upstream
+```c
+#define COLOR_BGR 1
+```
 
-Base project: `Droidspaces/recovery-console`.
+## Shell
 
-This branch contains only the Albus-specific configuration and standalone binary build pipeline.
+The Albus recovery provides:
+
+```text
+/sbin/sh -> busybox
+```
+
+So the profile uses:
+
+```c
+#define DEFAULT_SHELL "/sbin/sh"
+```
+
+## Input
+
+Validated support for:
+
+```text
+Power
+Volume Up
+Volume Down
+Input hotplug
+```
+
+Volume keys control console scrolling, while Power controls display blank/wake.
+
+## Integration
+
+Recovery Console starts automatically during recovery boot and keeps TWRP stopped while it is active.
+
+When the primary shell exits with:
+
+```sh
+exit
+```
+
+Recovery Console exits and starts the normal recovery service again.
+
+## Build
+
+The build generates the following rotation variants:
+
+```text
+portrait-0
+landscape-90
+portrait-180
+landscape-270
+```
+
+Rotation is selected at build time through `ALBUS_ROTATION`.
+
+## Base
+
+```text
+Device: Moto Z2 Play
+Codename: albus
+TWRP: 3.5.0_9-0
+Kernel: 3.18.71
+Architecture: aarch64
+```
+
+## Status
+
+Validated on-device:
+
+```text
+Recovery Console startup
+FBDEV rendering
+RGB/BGR framebuffer layout
+PTY shell
+Unix socket
+attach / reconnect
+Power blank / wake
+60s display timeout
+Volume scrolling
+input hotplug
+exit -> TWRP
+ADB during Recovery Console
+```
+
+## Credits
+
+Forked from [Droidspaces/recovery-console](https://github.com/Droidspaces/recovery-console).
+
+Recovery Console core belongs to the upstream project. This fork contains the Moto Z2 Play (`albus`) port, device configuration, build adaptations, and validation.
