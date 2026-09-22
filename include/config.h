@@ -43,8 +43,8 @@
 #define DEFAULT_BG 0
 #define CURSOR_COLOR 15
 
-/* Pixel order still requires visual confirmation; keep upstream RGB default. */
-#define COLOR_BGR 0
+/* Channel FBDEV layout: R@0, G@8, B@16, A@24. */
+#define COLOR_BGR 1
 
 /*
  * Real recovery probe exposes FBDEV only (no /dev/dri). In this codebase
