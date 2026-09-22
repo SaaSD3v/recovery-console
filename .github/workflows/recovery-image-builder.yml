@@ -5,213 +5,247 @@ on:
     branches: ["Channel-Recovery-Image-Builder"]
     paths:
       - "builder/REQUEST.env"
+      - "builder/integrate-channel-twrp-zip.sh"
+      - "builder/set-rotation.py"
+      - "builder/build-freetype.sh"
+      - ".github/workflows/recovery-image-builder.yml"
 
 permissions:
   contents: read
 
+env:
+  CHANNEL_TWRP_VERSION: "3.5.2_10-0"
+  CHANNEL_TWRP_SHA256: "2c43cee3d2fc64c7632d6f2f49567f59a563446a34b073678eda8b77cb5bd74c"
+  MAGISK_VERSION: "30.7"
+  MAGISK_APK_SHA256: "e0d32d2123532860f97123d927b1bb86c4e08e6fd8a48bfc6b5bee0afae9ebd5"
+  MAGISKBOOT_SHA256: "a18ecbd7981179494b7d281453d6c4e25b5c719e7d2ef7f6eba3c6be3043c58e"
+
 jobs:
-  build:
-    name: Channel ${{ matrix.name }}
+  prepare:
+    name: Read Channel request
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - rotation: 0
-            degrees: 0deg
-            name: rot0-0deg
-          - rotation: 1
-            degrees: 90deg
-            name: rot1-90deg
-          - rotation: 2
-            degrees: 180deg
-            name: rot2-180deg
-          - rotation: 3
-            degrees: 270deg
-            name: rot3-270deg
-
+    outputs:
+      matrix: ${{ steps.cfg.outputs.matrix }}
+      source_ref: ${{ steps.cfg.outputs.source_ref }}
+      orientation: ${{ steps.cfg.outputs.orientation }}
     steps:
-      - name: Checkout Channel builder
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Read request
+      - name: Resolve request
         id: cfg
         shell: bash
         run: |
           set -euo pipefail
-          [ -f builder/REQUEST.env ] || { echo "builder/REQUEST.env not found" >&2; exit 1; }
+          test -f builder/REQUEST.env
           set -a
           source builder/REQUEST.env
           set +a
 
           : "${SOURCE_REF:=Channel-Configs}"
-          : "${ARCHITECTURE:=aarch64}"
-          : "${OUTPUT_PREFIX:=channel-recovery-console}"
-          : "${SECLABEL:=u:r:recovery:s0}"
-          : "${TWRP_ZIP_URL:=}"
-          : "${TWRP_ZIP_PATH:=}"
-          : "${TWRP_ZIP_SHA256:=}"
-          : "${MAGISK_APK_URL:=}"
+          : "${ORIENTATION:=all}"
+          : "${TWRP_VERSION:=3.5.2_10-0}"
 
           [ "$SOURCE_REF" = "Channel-Configs" ] || {
-            echo "ERROR: this builder is dedicated to SOURCE_REF=Channel-Configs" >&2
+            echo "ERROR: Channel recovery builder only accepts SOURCE_REF=Channel-Configs" >&2
             exit 1
           }
-          [ "$ARCHITECTURE" = "aarch64" ] || {
-            echo "ERROR: Channel requires ARCHITECTURE=aarch64" >&2
+          [ "$TWRP_VERSION" = "$CHANNEL_TWRP_VERSION" ] || {
+            echo "ERROR: only the validated TWRP $CHANNEL_TWRP_VERSION base is accepted" >&2
             exit 1
           }
 
-          if [ -z "$TWRP_ZIP_URL" ] && [ -z "$TWRP_ZIP_PATH" ]; then
-            echo "Either TWRP_ZIP_URL or TWRP_ZIP_PATH is required" >&2
-            exit 1
-          fi
-          if [ -n "$TWRP_ZIP_URL" ] && [ -n "$TWRP_ZIP_PATH" ]; then
-            echo "Use only one of TWRP_ZIP_URL or TWRP_ZIP_PATH" >&2
-            exit 1
-          fi
+          case "$ORIENTATION" in
+            all)
+              MATRIX='{"include":[
+                {"rotation":0,"degrees":"0deg","orientation":"portrait-0"},
+                {"rotation":1,"degrees":"90deg","orientation":"landscape-90"},
+                {"rotation":2,"degrees":"180deg","orientation":"portrait-180"},
+                {"rotation":3,"degrees":"270deg","orientation":"landscape-270"}
+              ]}'
+              ;;
+            portrait-0)
+              MATRIX='{"include":[{"rotation":0,"degrees":"0deg","orientation":"portrait-0"}]}'
+              ;;
+            landscape-90)
+              MATRIX='{"include":[{"rotation":1,"degrees":"90deg","orientation":"landscape-90"}]}'
+              ;;
+            portrait-180)
+              MATRIX='{"include":[{"rotation":2,"degrees":"180deg","orientation":"portrait-180"}]}'
+              ;;
+            landscape-270)
+              MATRIX='{"include":[{"rotation":3,"degrees":"270deg","orientation":"landscape-270"}]}'
+              ;;
+            *)
+              echo "ERROR: unsupported ORIENTATION=$ORIENTATION" >&2
+              exit 1
+              ;;
+          esac
 
-          {
-            echo "source_ref=$SOURCE_REF"
-            echo "twrp_zip_url=$TWRP_ZIP_URL"
-            echo "twrp_zip_path=$TWRP_ZIP_PATH"
-            echo "twrp_zip_sha256=$TWRP_ZIP_SHA256"
-            echo "architecture=$ARCHITECTURE"
-            echo "output_prefix=$OUTPUT_PREFIX"
-            echo "seclabel=$SECLABEL"
-            echo "magisk_apk_url=$MAGISK_APK_URL"
-          } >> "$GITHUB_OUTPUT"
+          MATRIX=$(printf '%s' "$MATRIX" | tr -d '\n' | tr -d ' ')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          echo "orientation=$ORIENTATION" >> "$GITHUB_OUTPUT"
+          echo "Request: source=$SOURCE_REF orientation=$ORIENTATION TWRP=$TWRP_VERSION"
 
-      - name: Checkout Channel profile
+  build:
+    name: Channel permanent - ${{ matrix.orientation }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout Channel recovery builder
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.cfg.outputs.source_ref }}
+          ref: Channel-Recovery-Image-Builder
+          path: builder-tools
+
+      - name: Checkout Channel binary profile
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_ref }}
           path: console-src
 
       - name: Install host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl wget unzip zip jq cpio file xxd xz-utils lz4
+          sudo apt-get install -y build-essential curl unzip zip cpio file xxd xz-utils lz4
 
-      - name: Download aarch64 toolchain
+      - name: Download aarch64 musl toolchain
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$HOME/toolchains"
           cd "$HOME/toolchains"
-          URL="https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers/aarch64-linux-musl-cross.tar.gz"
-          curl -fL --retry 3 --retry-delay 2 -o toolchain.tar.gz "$URL"
-          tar -xzf toolchain.tar.gz
-          test -x "$HOME/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
+          curl -fL --retry 3 --retry-delay 2 --connect-timeout 30             -o aarch64-linux-musl-cross.tar.gz             "https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers/aarch64-linux-musl-cross.tar.gz"
+          tar -xzf aarch64-linux-musl-cross.tar.gz
+          "$HOME/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" --version
 
-      - name: Patch Channel rotation
+      - name: Select Channel orientation
+        shell: bash
         run: |
-          python3 builder/set-rotation.py console-src/include/config.h '${{ matrix.rotation }}'
-          grep -E '^#define[[:space:]]+ROTATION[[:space:]]+' console-src/include/config.h
+          set -euo pipefail
+          python3 builder-tools/builder/set-rotation.py             console-src/include/config.h             '${{ matrix.rotation }}'
+          grep -E '^#define[[:space:]]+(CHANNEL_ROTATION|ROTATION)[[:space:]]+' console-src/include/config.h
 
       - name: Build FreeType
+        shell: bash
         run: |
-          chmod +x builder/build-freetype.sh
-          builder/build-freetype.sh aarch64-linux-musl "$GITHUB_WORKSPACE/console-src"
+          set -euo pipefail
+          chmod +x builder-tools/builder/build-freetype.sh
+          builder-tools/builder/build-freetype.sh aarch64-linux-musl "$GITHUB_WORKSPACE/console-src"
 
-      - name: Build Recovery Console
+      - name: Build Channel Recovery Console
         shell: bash
         run: |
           set -euo pipefail
           cd console-src
           make clean
           make aarch64 V=1
-          test -s output/recovery-console-aarch64
-          chmod 0755 output/recovery-console-aarch64
-          file output/recovery-console-aarch64
-          sha256sum output/recovery-console-aarch64
+          BIN=output/recovery-console-aarch64
+          test -s "$BIN"
+          chmod 0755 "$BIN"
+          file "$BIN"
+          if readelf -l "$BIN" | grep -q 'Requesting program interpreter'; then
+            echo "ERROR: recovery-console must be static" >&2
+            exit 1
+          fi
+          sha256sum "$BIN"
 
-      - name: Prepare Channel TWRP installer ZIP
+      - name: Download validated official TeamWin installer
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p input
-          URL='${{ steps.cfg.outputs.twrp_zip_url }}'
-          PATH_IN='${{ steps.cfg.outputs.twrp_zip_path }}'
-          EXPECTED='${{ steps.cfg.outputs.twrp_zip_sha256 }}'
+          NAME="twrp-installer-$CHANNEL_TWRP_VERSION-channel.zip"
+          PAGE="https://dl.twrp.me/channel/$NAME.html"
 
-          if [ -n "$URL" ]; then
-            curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 -o input/twrp-channel.zip "$URL"
-          else
-            test -f "$PATH_IN"
-            cp "$PATH_IN" input/twrp-channel.zip
-          fi
+          PAGE_HTML=$(curl -fLsS --retry 3 --retry-delay 2             -A 'Mozilla/5.0 GitHub-Actions Recovery-Console-Builder' "$PAGE")
 
-          test -s input/twrp-channel.zip
-          unzip -t input/twrp-channel.zip >/dev/null
+          FILE_HREF=$(printf '%s' "$PAGE_HTML"             | grep -oE 'href="[^"]*twrp-installer-[^"]*-channel\.zip"'             | head -n1 | cut -d'"' -f2)
 
-          ACTUAL=$(sha256sum input/twrp-channel.zip | awk '{print $1}')
-          echo "Base TWRP installer SHA-256: $ACTUAL"
-          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "ERROR: TWRP installer SHA-256 mismatch" >&2
-            exit 1
-          fi
+          case "$FILE_HREF" in
+            http://*|https://*) FILE_URL="$FILE_HREF" ;;
+            /*) FILE_URL="https://dl.twrp.me$FILE_HREF" ;;
+            *) FILE_URL="https://dl.twrp.me/channel/$FILE_HREF" ;;
+          esac
 
-          unzip -l input/twrp-channel.zip | grep -Eq 'ramdisk-(twrp|recovery)\.cpio'
-          unzip -l input/twrp-channel.zip | grep -q 'META-INF/com/google/android/update-binary'
-          unzip -l input/twrp-channel.zip | grep -q 'magiskboot'
+          ok=0
+          for URL in             "https://eu.dl.twrp.me/channel/$NAME"             "$FILE_URL"             "https://dl.twrp.me/channel/$NAME?download=1"; do
+            rm -f "input/$NAME.part"
+            if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30               -A 'Mozilla/5.0 GitHub-Actions Recovery-Console-Builder'               -e "$PAGE" -o "input/$NAME.part" "$URL" &&
+              unzip -t "input/$NAME.part" >/dev/null 2>&1; then
+              mv "input/$NAME.part" "input/$NAME"
+              ok=1
+              break
+            fi
+          done
+          [ "$ok" -eq 1 ]
 
-      - name: Install host magiskboot
+          echo "$CHANNEL_TWRP_SHA256  input/$NAME" | sha256sum -c -
+          unzip -Z1 "input/$NAME" | grep -Eq '^ramdisk-(twrp|recovery)\.cpio$'
+          unzip -Z1 "input/$NAME" | grep -q '^META-INF/com/google/android/update-binary$'
+          unzip -Z1 "input/$NAME" | grep -q '^magiskboot$'
+
+      - name: Install pinned host magiskboot
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p tools
-          MAGISK_URL='${{ steps.cfg.outputs.magisk_apk_url }}'
-          if [ -z "$MAGISK_URL" ]; then
-            MAGISK_URL=$(curl -fsSL https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
-              | jq -r '.assets[] | select(.name | test("^Magisk-v.*\\.apk$")) | .browser_download_url' \
-              | head -n1)
-          fi
-          [ -n "$MAGISK_URL" ] && [ "$MAGISK_URL" != "null" ]
-          curl -fL --retry 3 --retry-delay 2 -o tools/Magisk.apk "$MAGISK_URL"
-          unzip -p tools/Magisk.apk lib/x86_64/libmagiskboot.so > tools/magiskboot
+          curl -fL --retry 3 --retry-delay 2             -o "tools/Magisk-v$MAGISK_VERSION.apk"             "https://github.com/topjohnwu/Magisk/releases/download/v$MAGISK_VERSION/Magisk-v$MAGISK_VERSION.apk"
+          echo "$MAGISK_APK_SHA256  tools/Magisk-v$MAGISK_VERSION.apk" | sha256sum -c -
+          unzip -p "tools/Magisk-v$MAGISK_VERSION.apk"             lib/x86_64/libmagiskboot.so > tools/magiskboot
           chmod 0755 tools/magiskboot
-          test -x tools/magiskboot
-          test -s tools/magiskboot
+          echo "$MAGISKBOOT_SHA256  tools/magiskboot" | sha256sum -c -
 
-      - name: Integrate Recovery Console into TWRP ramdisk
+      - name: Integrate upstream permanent Recovery Console
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x builder/integrate-channel-twrp-zip.sh
           mkdir -p dist
-          OUT="dist/${{ steps.cfg.outputs.output_prefix }}-aarch64-${{ matrix.name }}.zip"
+          chmod +x builder-tools/builder/integrate-channel-twrp-zip.sh
 
-          builder/integrate-channel-twrp-zip.sh \
-            tools/magiskboot \
-            input/twrp-channel.zip \
-            console-src/output/recovery-console-aarch64 \
-            "$OUT" \
-            '${{ steps.cfg.outputs.seclabel }}'
+          BASE="input/twrp-installer-$CHANNEL_TWRP_VERSION-channel.zip"
+          OUT="dist/twrp-$CHANNEL_TWRP_VERSION-channel-recovery-console-upstream-permanent-${{ matrix.orientation }}.zip"
 
+          builder-tools/builder/integrate-channel-twrp-zip.sh             tools/magiskboot             "$BASE"             console-src/output/recovery-console-aarch64             "$OUT"             'u:r:recovery:s0'
+
+          test -s "$OUT"
+          unzip -t "$OUT" >/dev/null
           RAMDISK=$(unzip -Z1 "$OUT" | grep -E '^ramdisk-(twrp|recovery)\.cpio$' | head -n1)
-          [ -n "$RAMDISK" ]
-          unzip -p "$OUT" "$RAMDISK" > "dist/${{ steps.cfg.outputs.output_prefix }}-aarch64-${{ matrix.name }}-$RAMDISK"
+          unzip -p "$OUT" "$RAMDISK" > "dist/${{ matrix.orientation }}-$RAMDISK"
 
-          cat > "dist/BUILD-INFO-${{ matrix.name }}.txt" <<EOF
-          Device: Moto G7 Play (channel)
-          Recovery layout: recovery-as-boot
-          Source profile: ${{ steps.cfg.outputs.source_ref }}
+          cat > "dist/BUILD-INFO-${{ matrix.orientation }}.txt" <<EOF
+          Device: Motorola Moto G7 Play (channel)
+          Branch: Channel-Recovery-Image-Builder
+          Source profile: Channel-Configs
+          Artifact type: native TWRP recovery-as-boot installer
+          TWRP base: twrp-installer-$CHANNEL_TWRP_VERSION-channel.zip
+          TWRP SHA-256: $CHANNEL_TWRP_SHA256
           Architecture: aarch64
+          Orientation: ${{ matrix.orientation }}
           ROTATION=${{ matrix.rotation }}
-          Orientation=${{ matrix.degrees }} clockwise
-          Installer patches: boot_a + boot_b
-          Recovery Console autostart: disabled
-          SELinux seclabel: ${{ steps.cfg.outputs.seclabel }}
+          Physical display: 720x1512
+          Framebuffer: /dev/graphics/fb0
+          Recovery layout: recovery-as-boot
+          Installer target: boot_a + boot_b
+          Installer update-binary: preserved
+          Console path: /system/bin/recovery-console
+          Integration: upstream README permanent init.rc method
+          Stock recovery service: disabled
+          Recovery Console autostart: YES
+          SELinux recovery mode: permissive from TWRP early-init
+          Fallback on console shell exit: start recovery
           EOF
 
           sha256sum "$OUT" > "$OUT.sha256"
-          ls -lh dist/
 
-      - name: Upload Channel recovery-as-boot artifacts
+      - name: Upload flashable Channel installer
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.cfg.outputs.output_prefix }}-aarch64-${{ matrix.name }}
+          name: channel-twrp-console-upstream-permanent-${{ matrix.orientation }}
           path: |
             dist/*.zip
             dist/*.zip.sha256
@@ -219,3 +253,4 @@ jobs:
             dist/BUILD-INFO-*.txt
           if-no-files-found: error
           compression-level: 0
+          retention-days: 30

@@ -1,123 +1,54 @@
 # Channel Recovery-as-Boot Builder
 
-This branch is dedicated to the Moto G7 Play (`channel`).
+This branch is dedicated to the Moto G7 Play (`channel`) flashable recovery artifact.
 
-Unlike devices with a standalone recovery partition, Channel uses recovery-as-boot (`BOARD_USES_RECOVERY_AS_BOOT := true`). The official TWRP installer patches both `boot_a` and `boot_b` by replacing their ramdisk.
+Normal Recovery Console binaries are built only from `Channel-Configs`. This branch consumes that profile and produces a TWRP recovery-as-boot installer.
 
-For that reason this builder uses the official Channel TWRP installer ZIP as the source of the recovery ramdisk instead of treating recovery as a standalone partition image.
+## Base locked to the validated device test
 
-## GitHub Actions manual builder
+The builder intentionally uses only:
 
-The repository default branch contains the **Channel TWRP + Recovery Console** workflow so it is available through the GitHub Actions **Run workflow** UI.
+- `twrp-installer-3.5.2_10-0-channel.zip`
+- SHA-256 `2c43cee3d2fc64c7632d6f2f49567f59a563446a34b073678eda8b77cb5bd74c`
 
-Inputs:
+Channel uses `BOARD_USES_RECOVERY_AS_BOOT := true`. TeamWin's native installer reads `boot_a` and `boot_b`, replaces their recovery ramdisk, repacks the existing image and writes it back. The builder preserves that installer and therefore preserves the kernel/DTB/header already installed on the phone.
 
-- `orientation=all` builds 0, 90, 180 and 270 degrees.
-- `portrait-0` builds rotation 0 only.
-- `landscape-90` builds rotation 1 only.
-- `portrait-180` builds rotation 2 only.
-- `landscape-270` builds rotation 3 only.
-- `twrp_version` selects an official Channel installer version.
-- `publish_release` optionally publishes the final installer ZIP(s) in a GitHub Release; Actions artifacts are always uploaded.
+## Permanent integration
 
-The manual workflow opens the official Team Win download page for the selected version, follows the installer link exposed by that page, builds `Channel-Configs`, integrates the console into the ZIP's recovery ramdisk, and uploads the final native TWRP installer.
+The ramdisk is modified according to the upstream Recovery Console README:
 
-## Build flow
+1. add `disabled` to the original stock `service recovery`;
+2. install the binary as `/system/bin/recovery-console`;
+3. define `service recovery-console /system/bin/recovery-console` in root `/init.rc`;
+4. add `on boot -> start recovery-console` in root `/init.rc`;
+5. preserve the original LZMA ramdisk compression;
+6. preserve TeamWin `update-binary` and embedded installer `magiskboot`.
 
-For each rotation (0/90/180/270 degrees) the workflow:
+The tested base already sets recovery SELinux permissive in `early-init`.
 
-1. Checks out `Channel-Configs`.
-2. Builds the aarch64 Recovery Console binary.
-3. Downloads or reads a Channel TWRP installer ZIP.
-4. Locates `ramdisk-twrp.cpio` or `ramdisk-recovery.cpio` inside the ZIP.
-5. Injects `recovery-console` into that ramdisk.
-6. Follows the upstream README permanent method exactly: adds `disabled` to the original stock `service recovery`, installs the console at `/system/bin/recovery-console`, and writes the console service plus `on boot -> start recovery-console` into the ramdisk root `/init.rc`.
-7. Rebuilds the TWRP installer ZIP without changing its recovery-as-boot installer logic.
-8. Extracts the resulting modified ramdisk as a separate artifact for inspection.
-9. Uploads the modified installer ZIP, ramdisk CPIO, SHA-256 and build information.
+## Build request
 
-The original Channel TWRP `update-binary` remains responsible for installation. It reads each device slot's current `boot_a` and `boot_b`, replaces only the ramdisk, repacks with `magiskboot`, and writes the result back. This preserves the kernel/DTB/header from the boot image already installed on the phone.
-
-## Input
-
-Copy `builder/REQUEST.env.example` to `builder/REQUEST.env`.
-
-Either provide a direct ZIP URL:
+Edit `builder/REQUEST.env` and push it to this branch:
 
 ```sh
 SOURCE_REF=Channel-Configs
-TWRP_ZIP_URL='https://example.com/twrp-channel-installer.zip'
-TWRP_ZIP_PATH=''
-TWRP_ZIP_SHA256=''
-ARCHITECTURE=aarch64
-OUTPUT_PREFIX=channel-recovery-console
-SECLABEL='u:r:recovery:s0'
-MAGISK_APK_URL=''
+ORIENTATION=all
+TWRP_VERSION=3.5.2_10-0
 REQUEST_ID=1
 ```
 
-or commit/upload the installer to this branch:
+`ORIENTATION` accepts `all`, `portrait-0`, `landscape-90`, `portrait-180`, or `landscape-270`.
 
-```sh
-SOURCE_REF=Channel-Configs
-TWRP_ZIP_URL=''
-TWRP_ZIP_PATH='builder/input/twrp-channel-installer.zip'
-TWRP_ZIP_SHA256=''
-ARCHITECTURE=aarch64
-OUTPUT_PREFIX=channel-recovery-console
-SECLABEL='u:r:recovery:s0'
-MAGISK_APK_URL=''
-REQUEST_ID=1
-```
+This branch owns the image-builder workflow. No Channel recovery workflow is required on `main`.
 
-A push changing `builder/REQUEST.env` on `Channel-Recovery-Image-Builder` triggers the build.
+## Verified runtime behavior
 
-## Outputs
-
-Each rotation produces an installable ZIP such as:
+The resulting permanent build was tested on-device:
 
 ```text
-channel-recovery-console-aarch64-rot0-0deg.zip
-channel-recovery-console-aarch64-rot1-90deg.zip
-channel-recovery-console-aarch64-rot2-180deg.zip
-channel-recovery-console-aarch64-rot3-270deg.zip
+CONSOLE=running
+TWRP=stopped
+ADBD=running
 ```
 
-Each artifact also contains the modified recovery ramdisk CPIO, its build information, and the ZIP SHA-256.
-
-## Runtime behavior
-
-This builder uses the project's documented **Permanent Integration** mode.
-
-On recovery boot:
-
-```text
-init
-  -> stock service recovery = disabled
-  -> on boot
-  -> start recovery-console
-```
-
-Recovery Console is therefore the primary recovery UI. The console service itself remains marked `disabled` so it is not class-started twice; the explicit `on boot` action starts it.
-
-If the console exits normally, its existing cleanup path can explicitly run `start recovery`, which remains a manual fallback to TWRP.
-
-For the tested Channel TWRP 3.5.2_10-0 ramdisk the console binary follows the upstream documented path exactly:
-
-```sh
-/system/bin/recovery-console
-```
-
-ADB attach:
-
-```sh
-/system/bin/recovery-console --attach
-```
-
-The Channel profile uses the upstream `main.c` unchanged. Its ramdisk exposes `/bin -> /system/bin`, so the upstream `/bin/sh` lifecycle commands work without a device-specific source patch.
-
-The tested TWRP 3.5.2_10-0 ramdisk already forces SELinux permissive in `early-init` with `write /sys/fs/selinux/enforce 0`, satisfying the upstream SELinux requirement without an extra policy rewrite.
-
-## Why the output is primarily a ZIP, not recovery.img
-
-Channel has no independent recovery partition. The persistent and firmware-safe artifact is therefore the modified TWRP installer ZIP. A standalone bootable image can only be produced safely when a matching Channel boot/recovery-as-boot image is supplied as an additional base, because the image also contains kernel/DTB/header data that is not present in the installer ramdisk alone.
+`/system/bin/recovery-console` and `/tmp/rc.sock` were present, ADB attach worked, and `exit` from the console shell invoked the upstream cleanup fallback and started TWRP.
