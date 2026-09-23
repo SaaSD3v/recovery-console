@@ -98,7 +98,7 @@ jobs:
 
   base:
     name: Build proven Channel TWRP DroidSpaces base
-    needs: [prepare, base]
+    needs: prepare
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
@@ -307,7 +307,7 @@ jobs:
 
   build:
     name: Channel permanent - ${{ matrix.orientation }}
-    needs: prepare
+    needs: [prepare, base]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
