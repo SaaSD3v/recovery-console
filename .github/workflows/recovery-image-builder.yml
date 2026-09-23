@@ -1,8 +1,8 @@
-name: Channel Recovery-as-Boot Builder
+name: Channel DroidSpaces Recovery-as-Boot Builder
 
 on:
   push:
-    branches: ["Channel-Recovery-Image-Builder"]
+    branches: ["Channel-DroidSpaces-Recovery-Image-Builder"]
     paths:
       - "builder/REQUEST.env"
       - "builder/integrate-channel-twrp-zip.sh"
@@ -16,6 +16,14 @@ permissions:
 env:
   CHANNEL_TWRP_VERSION: "3.5.2_10-0"
   CHANNEL_TWRP_SHA256: "2c43cee3d2fc64c7632d6f2f49567f59a563446a34b073678eda8b77cb5bd74c"
+  CHANNEL_TWRP_IMG_SHA256: "486c3e11250c1233112372129c796b55e0cd5d0f4ac605906d90b0f9b574056c"
+  TEAMWIN_KERNEL_REPO: "https://github.com/TeamWin/android_kernel_motorola_sdm632.git"
+  TEAMWIN_KERNEL_REF: "0fba78718c25ef55a211dd7608cb255a226dd8bf"
+  OFFICIAL_TWRP_CONFIG_SHA256: "bb1430e6ceccb76c1f0a5d8633e10f8aa71933953cb1ee9cee29b1613c46b335"
+  DROIDSPACES_CONFIG_COMMIT: "ee9637adaa0c38f9105feb4902531d608298df81"
+  DROIDSPACES_FIREWALL_COMMIT: "e310252413ffb052e86092d32f7f8b4fabd5eae2"
+  DROIDSPACES_PARANOID_COMMIT: "f09c342d80aaa93eb852320568b9313d2768386b"
+  DROIDSPACES_CGROUP_COMMIT: "c6f0507da463205a4d6d9ca4fb1130218530feb3"
   MAGISK_VERSION: "30.7"
   MAGISK_APK_SHA256: "e0d32d2123532860f97123d927b1bb86c4e08e6fd8a48bfc6b5bee0afae9ebd5"
   MAGISKBOOT_SHA256: "a18ecbd7981179494b7d281453d6c4e25b5c719e7d2ef7f6eba3c6be3043c58e"
@@ -87,6 +95,216 @@ jobs:
           echo "orientation=$ORIENTATION" >> "$GITHUB_OUTPUT"
           echo "Request: source=$SOURCE_REF orientation=$ORIENTATION TWRP=$TWRP_VERSION"
 
+
+  base:
+    name: Build proven Channel TWRP DroidSpaces base
+    needs: [prepare, base]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl ca-certificates bc bison flex libssl-dev libelf-dev make libncurses-dev python3 xz-utils cpio zip unzip file xxd lz4
+
+      - name: Clone official TeamWin twrp-10.0 kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init kernel
+          git -C kernel remote add origin "$TEAMWIN_KERNEL_REPO"
+          git -C kernel fetch --depth=1 origin "$TEAMWIN_KERNEL_REF"
+          git -C kernel checkout --detach FETCH_HEAD
+          git -C kernel log -1 --format='%H %s'
+
+          if grep -A8 'static int __init populate_rootfs' kernel/init/initramfs.c | grep -q '^[[:space:]]*if (do_skip_initramfs)'; then
+            echo "ERROR: selected TeamWin source still honors skip_initramfs" >&2
+            exit 1
+          fi
+
+      - name: Download validated official TWRP image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p input
+          NAME="twrp-$CHANNEL_TWRP_VERSION-channel.img"
+          PAGE="https://dl.twrp.me/channel/$NAME.html"
+          HTML=$(curl -fLsS --retry 3 --retry-delay 2 -A 'Mozilla/5.0 GitHub-Actions Channel-DroidSpaces-Builder' "$PAGE")
+          HREF=$(printf '%s' "$HTML" | grep -oE 'href="[^"]*twrp-3\.5\.2_10-0-channel\.img"' | head -n1 | cut -d'"' -f2 || true)
+
+          case "$HREF" in
+            http://*|https://*) FILE_URL="$HREF" ;;
+            /*) FILE_URL="https://dl.twrp.me$HREF" ;;
+            "") FILE_URL="" ;;
+            *) FILE_URL="https://dl.twrp.me/channel/$HREF" ;;
+          esac
+
+          ok=0
+          for URL in "https://eu.dl.twrp.me/channel/$NAME" "$FILE_URL" "https://dl.twrp.me/channel/$NAME?download=1"; do
+            [ -n "$URL" ] || continue
+            rm -f "input/$NAME.part"
+            if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 -A 'Mozilla/5.0 GitHub-Actions Channel-DroidSpaces-Builder' -e "$PAGE" -o "input/$NAME.part" "$URL"; then
+              if [ "$(stat -c%s "input/$NAME.part")" -gt 20000000 ] && [ "$(head -c 8 "input/$NAME.part")" = "ANDROID!" ]; then
+                mv "input/$NAME.part" "input/$NAME"
+                ok=1
+                break
+              fi
+            fi
+          done
+          [ "$ok" -eq 1 ]
+          echo "$CHANNEL_TWRP_IMG_SHA256  input/$NAME" | sha256sum -c -
+
+      - name: Extract exact official TWRP config
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+          b = Path("input/twrp-3.5.2_10-0-channel.img").read_bytes()
+          if b[:8] != b"ANDROID!":
+              raise SystemExit("bad Android boot magic")
+          ksize = struct.unpack_from("<I", b, 8)[0]
+          page = struct.unpack_from("<I", b, 36)[0]
+          Path("official-twrp-Image.gz-dtb").write_bytes(b[page:page+ksize])
+          PY
+
+          chmod +x kernel/scripts/extract-ikconfig
+          kernel/scripts/extract-ikconfig official-twrp-Image.gz-dtb > official-twrp.config
+          echo "$OFFICIAL_TWRP_CONFIG_SHA256  official-twrp.config" | sha256sum -c -
+          grep -qx 'CONFIG_LOCALVERSION="-perf"' official-twrp.config
+          grep -qx 'CONFIG_SCHED_CORE_CTL=y' official-twrp.config
+          grep -qx 'CONFIG_CMA_AREAS=7' official-twrp.config
+
+      - name: Apply all DroidSpaces fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 "https://github.com/SaaSD3v/android_kernel_motorola_sdm632/commit/$DROIDSPACES_CGROUP_COMMIT.patch" -o /tmp/cgroup.patch
+          git -C kernel apply --check /tmp/cgroup.patch
+          git -C kernel apply /tmp/cgroup.patch
+
+          cat > droidspaces.fragment <<'EOF'
+          CONFIG_SYSVIPC=y
+          CONFIG_POSIX_MQUEUE=y
+          CONFIG_CGROUP_PIDS=y
+          CONFIG_CGROUP_DEVICE=y
+          CONFIG_MEMCG=y
+          CONFIG_UTS_NS=y
+          CONFIG_USER_NS=y
+          CONFIG_PID_NS=y
+          CONFIG_IPC_NS=y
+          CONFIG_BRIDGE_NETFILTER=y
+          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+          CONFIG_CGROUP_NET_PRIO=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_VETH=y
+          CONFIG_OVERLAY_FS=y
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_NET=y
+          CONFIG_NETFILTER_XT_SET=y
+          CONFIG_NETFILTER_XT_MATCH_RECENT=y
+          # CONFIG_ANDROID_PARANOID_NETWORK is not set
+          EOF
+
+      - name: Download kernel toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-qpr3-release/clang-r353983c1.tar.gz" -o clang.tar.gz
+          mkdir -p toolchains/clang
+          tar -xzf clang.tar.gz -C toolchains/clang
+          git clone --depth=1 -b android11-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchains/gcc64
+          git clone --depth=1 -b android11-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 toolchains/gcc32
+          echo "CLANG_BIN=$GITHUB_WORKSPACE/toolchains/clang/bin" >> "$GITHUB_ENV"
+          echo "GCC64_BIN=$GITHUB_WORKSPACE/toolchains/gcc64/bin" >> "$GITHUB_ENV"
+          echo "GCC32_BIN=$GITHUB_WORKSPACE/toolchains/gcc32/bin" >> "$GITHUB_ENV"
+
+      - name: Configure TWRP plus DroidSpaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+          mkdir -p build
+          cp official-twrp.config build/.config
+
+          make -C kernel O="$GITHUB_WORKSPACE/build" ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 olddefconfig
+          chmod +x kernel/scripts/kconfig/merge_config.sh
+          ( cd kernel && scripts/kconfig/merge_config.sh -m -O "$GITHUB_WORKSPACE/build" "$GITHUB_WORKSPACE/build/.config" "$GITHUB_WORKSPACE/droidspaces.fragment" )
+          make -C kernel O="$GITHUB_WORKSPACE/build" ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 olddefconfig
+
+          CONFIG=build/.config
+          for s in CONFIG_SYSVIPC CONFIG_POSIX_MQUEUE CONFIG_CGROUP_PIDS CONFIG_CGROUP_DEVICE CONFIG_MEMCG CONFIG_UTS_NS CONFIG_USER_NS CONFIG_PID_NS CONFIG_IPC_NS CONFIG_BRIDGE_NETFILTER CONFIG_NETFILTER_XT_MATCH_ADDRTYPE CONFIG_CGROUP_NET_PRIO CONFIG_DEVTMPFS CONFIG_VETH CONFIG_OVERLAY_FS CONFIG_IP_SET CONFIG_IP_SET_HASH_IP CONFIG_IP_SET_HASH_NET CONFIG_NETFILTER_XT_SET CONFIG_NETFILTER_XT_MATCH_RECENT; do
+            grep -qx "$s=y" "$CONFIG" || { echo "ERROR: missing $s=y" >&2; exit 1; }
+          done
+          grep -qx '# CONFIG_ANDROID_PARANOID_NETWORK is not set' "$CONFIG"
+          cp "$CONFIG" droidspaces-final.config
+
+      - name: Build Image.gz-dtb
+        env:
+          KBUILD_BUILD_USER: nobody
+          KBUILD_BUILD_HOST: android-build
+          KBUILD_BUILD_TIMESTAMP: Thu Dec 17 04:30:48 PST 2020
+          KBUILD_BUILD_VERSION: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+          make -C kernel O="$GITHUB_WORKSPACE/build" ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j"$(nproc)" Image.gz-dtb
+          test -s build/arch/arm64/boot/Image.gz-dtb
+          sha256sum build/arch/arm64/boot/Image.gz-dtb > kernel.sha256
+
+      - name: Build reusable DroidSpaces TWRP base
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+          base = Path("input/twrp-3.5.2_10-0-channel.img").read_bytes()
+          nk = Path("build/arch/arm64/boot/Image.gz-dtb").read_bytes()
+          def al(v,a): return (v+a-1)//a*a
+          ks,rs,ss,page,hv = struct.unpack_from("<IIII",base,8)[0],struct.unpack_from("<I",base,16)[0],struct.unpack_from("<I",base,24)[0],struct.unpack_from("<I",base,36)[0],struct.unpack_from("<I",base,40)[0]
+          rds = struct.unpack_from("<I",base,1632)[0]
+          rdo = struct.unpack_from("<Q",base,1636)[0]
+          hs = struct.unpack_from("<I",base,1644)[0]
+          if base[:8] != b"ANDROID!" or hv != 1 or hs != 1648: raise SystemExit("unexpected boot header")
+          ko=page; ro=al(ko+ks,page); so=al(ro+rs,page); erdo=al(so+ss,page)
+          if rds and rdo != erdo: raise SystemExit("unexpected recovery_dtbo offset")
+          ok=base[ko:ko+ks]; rd=base[ro:ro+rs]; sec=base[so:so+ss]; dt=base[rdo:rdo+rds]; tail=base[rdo+rds:]
+          def build(k):
+              h=bytearray(base[:page]); struct.pack_into("<I",h,8,len(k))
+              nr=al(page+len(k),page); ns=al(nr+rs,page); nd=al(ns+ss,page)
+              if rds: struct.pack_into("<Q",h,1636,nd)
+              o=bytearray(h); o+=k; o+=bytes(nr-len(o)); o+=rd; o+=bytes(ns-len(o)); o+=sec; o+=bytes(nd-len(o)); o+=dt; o+=tail
+              return bytes(o)
+          if build(ok) != base: raise SystemExit("base reconstruction mismatch")
+          out=build(nk)
+          if len(out)>33554432: raise SystemExit("base too large")
+          Path("channel-twrp-3.5.2_10-0-droidspaces-base.img").write_bytes(out)
+          Path("official-stock-ramdisk.bin").write_bytes(rd)
+          Path("official-recovery-dtbo.bin").write_bytes(dt)
+          PY
+          sha256sum channel-twrp-3.5.2_10-0-droidspaces-base.img > base-image.sha256
+
+      - name: Upload reusable DroidSpaces base
+        uses: actions/upload-artifact@v4
+        with:
+          name: channel-droidspaces-base-${{ github.run_id }}
+          path: |
+            channel-twrp-3.5.2_10-0-droidspaces-base.img
+            build/arch/arm64/boot/Image.gz-dtb
+            official-twrp.config
+            droidspaces-final.config
+            official-stock-ramdisk.bin
+            official-recovery-dtbo.bin
+            kernel.sha256
+            base-image.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
   build:
     name: Channel permanent - ${{ matrix.orientation }}
     needs: prepare
@@ -99,7 +317,7 @@ jobs:
       - name: Checkout Channel recovery builder
         uses: actions/checkout@v4
         with:
-          ref: Channel-Recovery-Image-Builder
+          ref: Channel-DroidSpaces-Recovery-Image-Builder
           path: builder-tools
 
       - name: Checkout Channel binary profile
@@ -107,6 +325,12 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.source_ref }}
           path: console-src
+
+      - name: Download proven DroidSpaces TWRP base
+        uses: actions/download-artifact@v4
+        with:
+          name: channel-droidspaces-base-${{ github.run_id }}
+          path: base-artifact
 
       - name: Install host dependencies
         run: |
@@ -200,56 +424,26 @@ jobs:
           chmod 0755 tools/magiskboot
           echo "$MAGISKBOOT_SHA256  tools/magiskboot" | sha256sum -c -
 
-      - name: Integrate upstream permanent Recovery Console
+      - name: Integrate permanent Recovery Console and assemble DroidSpaces image
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
+          mkdir -p dist work
           chmod +x builder-tools/builder/integrate-channel-twrp-zip.sh
 
           BASE="input/twrp-installer-$CHANNEL_TWRP_VERSION-channel.zip"
-          OUT="dist/twrp-$CHANNEL_TWRP_VERSION-channel-recovery-console-upstream-permanent-${{ matrix.orientation }}.zip"
+          OUTZIP="work/channel-console-${{ matrix.orientation }}.zip"
 
-          builder-tools/builder/integrate-channel-twrp-zip.sh             tools/magiskboot             "$BASE"             console-src/output/recovery-console-aarch64             "$OUT"             'u:r:recovery:s0'
-
-          test -s "$OUT"
-          unzip -t "$OUT" >/dev/null
-          RAMDISK=$(unzip -Z1 "$OUT" | grep -E '^ramdisk-(twrp|recovery)\.cpio$' | head -n1)
-          unzip -p "$OUT" "$RAMDISK" > "dist/${{ matrix.orientation }}-$RAMDISK"
-
-          cat > "dist/BUILD-INFO-${{ matrix.orientation }}.txt" <<EOF
-          Device: Motorola Moto G7 Play (channel)
-          Branch: Channel-Recovery-Image-Builder
-          Source profile: Channel-Configs
-          Artifact type: native TWRP recovery-as-boot installer
-          TWRP base: twrp-installer-$CHANNEL_TWRP_VERSION-channel.zip
-          TWRP SHA-256: $CHANNEL_TWRP_SHA256
-          Architecture: aarch64
-          Orientation: ${{ matrix.orientation }}
-          ROTATION=${{ matrix.rotation }}
-          Physical display: 720x1512
-          Framebuffer: /dev/graphics/fb0
-          Recovery layout: recovery-as-boot
-          Installer target: boot_a + boot_b
-          Installer update-binary: preserved
-          Console path: /system/bin/recovery-console
-          Integration: upstream README permanent init.rc method
-          Stock recovery service: disabled
-          Recovery Console autostart: YES
-          SELinux recovery mode: permissive from TWRP early-init
-          Fallback on console shell exit: start recovery
-          EOF
-
-          sha256sum "$OUT" > "$OUT.sha256"
-
-      - name: Upload flashable Channel installer
+          STOCK_NAME=$(unzip -Z1 "$BASE" | grep -E '^ramdisk-(twrp|recovery)\.cpio      - name: Upload Channel DroidSpaces Recovery Console
         uses: actions/upload-artifact@v4
         with:
-          name: channel-twrp-console-upstream-permanent-${{ matrix.orientation }}
+          name: channel-droidspaces-recovery-console-${{ matrix.orientation }}
           path: |
-            dist/*.zip
-            dist/*.zip.sha256
-            dist/*ramdisk*.cpio
+            dist/*.img
+            dist/*.img.sha256
+            dist/recovery-console-channel-aarch64-*
+            dist/recovery-console-channel-aarch64-*.sha256
+            dist/ramdisk-channel-recovery-console-*.bin
             dist/BUILD-INFO-*.txt
           if-no-files-found: error
           compression-level: 0
