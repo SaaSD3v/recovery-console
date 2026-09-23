@@ -116,9 +116,8 @@ jobs:
           git -C kernel fetch --depth=1 origin "$TEAMWIN_KERNEL_REF"
           git -C kernel checkout --detach FETCH_HEAD
           git -C kernel log -1 --format='%H %s'
-
           if grep -A8 'static int __init populate_rootfs' kernel/init/initramfs.c | grep -q '^[[:space:]]*if (do_skip_initramfs)'; then
-            echo "ERROR: selected TeamWin source still honors skip_initramfs" >&2
+            echo "ERROR: TeamWin source still honors skip_initramfs" >&2
             exit 1
           fi
 
@@ -131,23 +130,19 @@ jobs:
           PAGE="https://dl.twrp.me/channel/$NAME.html"
           HTML=$(curl -fLsS --retry 3 --retry-delay 2 -A 'Mozilla/5.0 GitHub-Actions Channel-DroidSpaces-Builder' "$PAGE")
           HREF=$(printf '%s' "$HTML" | grep -oE 'href="[^"]*twrp-3\.5\.2_10-0-channel\.img"' | head -n1 | cut -d'"' -f2 || true)
-
           case "$HREF" in
             http://*|https://*) FILE_URL="$HREF" ;;
             /*) FILE_URL="https://dl.twrp.me$HREF" ;;
             "") FILE_URL="" ;;
             *) FILE_URL="https://dl.twrp.me/channel/$HREF" ;;
           esac
-
           ok=0
           for URL in "https://eu.dl.twrp.me/channel/$NAME" "$FILE_URL" "https://dl.twrp.me/channel/$NAME?download=1"; do
             [ -n "$URL" ] || continue
             rm -f "input/$NAME.part"
             if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 -A 'Mozilla/5.0 GitHub-Actions Channel-DroidSpaces-Builder' -e "$PAGE" -o "input/$NAME.part" "$URL"; then
               if [ "$(stat -c%s "input/$NAME.part")" -gt 20000000 ] && [ "$(head -c 8 "input/$NAME.part")" = "ANDROID!" ]; then
-                mv "input/$NAME.part" "input/$NAME"
-                ok=1
-                break
+                mv "input/$NAME.part" "input/$NAME"; ok=1; break
               fi
             fi
           done
@@ -161,14 +156,11 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
           import struct
-          b = Path("input/twrp-3.5.2_10-0-channel.img").read_bytes()
-          if b[:8] != b"ANDROID!":
-              raise SystemExit("bad Android boot magic")
-          ksize = struct.unpack_from("<I", b, 8)[0]
-          page = struct.unpack_from("<I", b, 36)[0]
-          Path("official-twrp-Image.gz-dtb").write_bytes(b[page:page+ksize])
+          b=Path("input/twrp-3.5.2_10-0-channel.img").read_bytes()
+          if b[:8]!=b"ANDROID!": raise SystemExit("bad boot magic")
+          k=struct.unpack_from("<I",b,8)[0]; p=struct.unpack_from("<I",b,36)[0]
+          Path("official-twrp-Image.gz-dtb").write_bytes(b[p:p+k])
           PY
-
           chmod +x kernel/scripts/extract-ikconfig
           kernel/scripts/extract-ikconfig official-twrp-Image.gz-dtb > official-twrp.config
           echo "$OFFICIAL_TWRP_CONFIG_SHA256  official-twrp.config" | sha256sum -c -
@@ -183,7 +175,6 @@ jobs:
           curl -fL --retry 5 "https://github.com/SaaSD3v/android_kernel_motorola_sdm632/commit/$DROIDSPACES_CGROUP_COMMIT.patch" -o /tmp/cgroup.patch
           git -C kernel apply --check /tmp/cgroup.patch
           git -C kernel apply /tmp/cgroup.patch
-
           cat > droidspaces.fragment <<'EOF'
           CONFIG_SYSVIPC=y
           CONFIG_POSIX_MQUEUE=y
@@ -228,12 +219,10 @@ jobs:
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
           mkdir -p build
           cp official-twrp.config build/.config
-
           make -C kernel O="$GITHUB_WORKSPACE/build" ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 olddefconfig
           chmod +x kernel/scripts/kconfig/merge_config.sh
           ( cd kernel && scripts/kconfig/merge_config.sh -m -O "$GITHUB_WORKSPACE/build" "$GITHUB_WORKSPACE/build/.config" "$GITHUB_WORKSPACE/droidspaces.fragment" )
           make -C kernel O="$GITHUB_WORKSPACE/build" ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 olddefconfig
-
           CONFIG=build/.config
           for s in CONFIG_SYSVIPC CONFIG_POSIX_MQUEUE CONFIG_CGROUP_PIDS CONFIG_CGROUP_DEVICE CONFIG_MEMCG CONFIG_UTS_NS CONFIG_USER_NS CONFIG_PID_NS CONFIG_IPC_NS CONFIG_BRIDGE_NETFILTER CONFIG_NETFILTER_XT_MATCH_ADDRTYPE CONFIG_CGROUP_NET_PRIO CONFIG_DEVTMPFS CONFIG_VETH CONFIG_OVERLAY_FS CONFIG_IP_SET CONFIG_IP_SET_HASH_IP CONFIG_IP_SET_HASH_NET CONFIG_NETFILTER_XT_SET CONFIG_NETFILTER_XT_MATCH_RECENT; do
             grep -qx "$s=y" "$CONFIG" || { echo "ERROR: missing $s=y" >&2; exit 1; }
@@ -245,14 +234,13 @@ jobs:
         env:
           KBUILD_BUILD_USER: nobody
           KBUILD_BUILD_HOST: android-build
-          KBUILD_BUILD_TIMESTAMP: Thu Dec 17 04:30:48 PST 2020
+          KBUILD_BUILD_TIMESTAMP: "Thu Dec 17 04:30:48 PST 2020"
           KBUILD_BUILD_VERSION: "1"
         shell: bash
         run: |
           set -euo pipefail
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
           make -C kernel O="$GITHUB_WORKSPACE/build" ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j"$(nproc)" Image.gz-dtb
-          test -s build/arch/arm64/boot/Image.gz-dtb
           sha256sum build/arch/arm64/boot/Image.gz-dtb > kernel.sha256
 
       - name: Build reusable DroidSpaces TWRP base
@@ -262,24 +250,23 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
           import struct
-          base = Path("input/twrp-3.5.2_10-0-channel.img").read_bytes()
-          nk = Path("build/arch/arm64/boot/Image.gz-dtb").read_bytes()
+          b=Path("input/twrp-3.5.2_10-0-channel.img").read_bytes()
+          nk=Path("build/arch/arm64/boot/Image.gz-dtb").read_bytes()
           def al(v,a): return (v+a-1)//a*a
-          ks,rs,ss,page,hv = struct.unpack_from("<IIII",base,8)[0],struct.unpack_from("<I",base,16)[0],struct.unpack_from("<I",base,24)[0],struct.unpack_from("<I",base,36)[0],struct.unpack_from("<I",base,40)[0]
-          rds = struct.unpack_from("<I",base,1632)[0]
-          rdo = struct.unpack_from("<Q",base,1636)[0]
-          hs = struct.unpack_from("<I",base,1644)[0]
-          if base[:8] != b"ANDROID!" or hv != 1 or hs != 1648: raise SystemExit("unexpected boot header")
+          ks=struct.unpack_from("<I",b,8)[0]; rs=struct.unpack_from("<I",b,16)[0]; ss=struct.unpack_from("<I",b,24)[0]
+          page=struct.unpack_from("<I",b,36)[0]; hv=struct.unpack_from("<I",b,40)[0]
+          rds=struct.unpack_from("<I",b,1632)[0]; rdo=struct.unpack_from("<Q",b,1636)[0]; hs=struct.unpack_from("<I",b,1644)[0]
+          if b[:8]!=b"ANDROID!" or hv!=1 or hs!=1648: raise SystemExit("unexpected header")
           ko=page; ro=al(ko+ks,page); so=al(ro+rs,page); erdo=al(so+ss,page)
-          if rds and rdo != erdo: raise SystemExit("unexpected recovery_dtbo offset")
-          ok=base[ko:ko+ks]; rd=base[ro:ro+rs]; sec=base[so:so+ss]; dt=base[rdo:rdo+rds]; tail=base[rdo+rds:]
+          if rds and rdo!=erdo: raise SystemExit("bad recovery_dtbo offset")
+          ok=b[ko:ko+ks]; rd=b[ro:ro+rs]; sec=b[so:so+ss]; dt=b[rdo:rdo+rds]; tail=b[rdo+rds:]
           def build(k):
-              h=bytearray(base[:page]); struct.pack_into("<I",h,8,len(k))
+              h=bytearray(b[:page]); struct.pack_into("<I",h,8,len(k))
               nr=al(page+len(k),page); ns=al(nr+rs,page); nd=al(ns+ss,page)
               if rds: struct.pack_into("<Q",h,1636,nd)
               o=bytearray(h); o+=k; o+=bytes(nr-len(o)); o+=rd; o+=bytes(ns-len(o)); o+=sec; o+=bytes(nd-len(o)); o+=dt; o+=tail
               return bytes(o)
-          if build(ok) != base: raise SystemExit("base reconstruction mismatch")
+          if build(ok)!=b: raise SystemExit("base reconstruction mismatch")
           out=build(nk)
           if len(out)>33554432: raise SystemExit("base too large")
           Path("channel-twrp-3.5.2_10-0-droidspaces-base.img").write_bytes(out)
@@ -430,11 +417,111 @@ jobs:
           set -euo pipefail
           mkdir -p dist work
           chmod +x builder-tools/builder/integrate-channel-twrp-zip.sh
-
           BASE="input/twrp-installer-$CHANNEL_TWRP_VERSION-channel.zip"
           OUTZIP="work/channel-console-${{ matrix.orientation }}.zip"
+          STOCK_NAME=$(unzip -Z1 "$BASE" | grep -E '^ramdisk-(twrp|recovery)\.cpio$' | head -n1)
+          unzip -p "$BASE" "$STOCK_NAME" > work/installer-stock-ramdisk.bin
+          builder-tools/builder/integrate-channel-twrp-zip.sh tools/magiskboot "$BASE" console-src/output/recovery-console-aarch64 "$OUTZIP" 'u:r:recovery:s0'
+          FINAL_NAME=$(unzip -Z1 "$OUTZIP" | grep -E '^ramdisk-(twrp|recovery)\.cpio$' | head -n1)
+          unzip -p "$OUTZIP" "$FINAL_NAME" > work/integrated-installer-ramdisk.bin
 
-          STOCK_NAME=$(unzip -Z1 "$BASE" | grep -E '^ramdisk-(twrp|recovery)\.cpio      - name: Upload Channel DroidSpaces Recovery Console
+          to_raw() {
+            in="$1"; out="$2"
+            if cpio -it < "$in" >/dev/null 2>&1; then cp "$in" "$out"; else tools/magiskboot decompress "$in" "$out"; fi
+          }
+          compression_of() {
+            f="$1"; magic=$(xxd -p -l 8 "$f" | tr -d '\n')
+            case "$magic" in
+              1f8b*) echo gzip ;;
+              04224d18*) echo lz4 ;;
+              02214c18*) echo lz4_legacy ;;
+              fd377a585a00*) echo xz ;;
+              425a68*) echo bzip2 ;;
+              5d000000*) echo lzma ;;
+              *) if cpio -it < "$f" >/dev/null 2>&1; then echo raw; else echo unknown; fi ;;
+            esac
+          }
+
+          to_raw work/installer-stock-ramdisk.bin work/installer-stock.raw
+          to_raw base-artifact/official-stock-ramdisk.bin work/image-stock.raw
+          to_raw work/integrated-installer-ramdisk.bin work/integrated.raw
+          cmp -s work/installer-stock.raw work/image-stock.raw || { echo "ERROR: installer/image TWRP ramdisks differ" >&2; exit 1; }
+
+          COMP=$(compression_of base-artifact/official-stock-ramdisk.bin)
+          [ "$COMP" != unknown ]
+          if [ "$COMP" = raw ]; then cp work/integrated.raw work/final-ramdisk.bin; else tools/magiskboot "compress=$COMP" work/integrated.raw work/final-ramdisk.bin; fi
+          to_raw work/final-ramdisk.bin work/final-roundtrip.raw
+          cmp -s work/integrated.raw work/final-roundtrip.raw
+
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+          b=Path("base-artifact/channel-twrp-3.5.2_10-0-droidspaces-base.img").read_bytes()
+          stock_exp=Path("base-artifact/official-stock-ramdisk.bin").read_bytes()
+          newrd=Path("work/final-ramdisk.bin").read_bytes()
+          outp=Path("dist/twrp-3.5.2_10-0-channel-RecoveryConsole-DroidSpaces-${{ matrix.orientation }}.img")
+          def al(v,a): return (v+a-1)//a*a
+          ks=struct.unpack_from("<I",b,8)[0]; rs=struct.unpack_from("<I",b,16)[0]; ss=struct.unpack_from("<I",b,24)[0]
+          page=struct.unpack_from("<I",b,36)[0]; hv=struct.unpack_from("<I",b,40)[0]
+          rds=struct.unpack_from("<I",b,1632)[0]; rdo=struct.unpack_from("<Q",b,1636)[0]; hs=struct.unpack_from("<I",b,1644)[0]
+          if b[:8]!=b"ANDROID!" or hv!=1 or hs!=1648: raise SystemExit("unexpected header")
+          ko=page; ro=al(ko+ks,page); so=al(ro+rs,page); erdo=al(so+ss,page)
+          if rds and rdo!=erdo: raise SystemExit("bad recovery_dtbo offset")
+          k=b[ko:ko+ks]; stock=b[ro:ro+rs]; sec=b[so:so+ss]; dt=b[rdo:rdo+rds]; tail=b[rdo+rds:]
+          if stock!=stock_exp: raise SystemExit("stock ramdisk mismatch")
+          def build(rd):
+              h=bytearray(b[:page]); struct.pack_into("<I",h,16,len(rd))
+              nr=al(ko+ks,page); ns=al(nr+len(rd),page); nd=al(ns+ss,page)
+              if rds: struct.pack_into("<Q",h,1636,nd)
+              o=bytearray(h); o+=k; o+=bytes(nr-len(o)); o+=rd; o+=bytes(ns-len(o)); o+=sec; o+=bytes(nd-len(o)); o+=dt; o+=tail
+              return bytes(o)
+          if build(stock)!=b: raise SystemExit("base reconstruction mismatch")
+          out=build(newrd)
+          if len(out)>33554432: raise SystemExit("final image exceeds 32 MiB")
+          outp.write_bytes(out)
+          Path("work/final-kernel.bin").write_bytes(k)
+          Path("work/final-dtbo.bin").write_bytes(dt)
+          PY
+
+          OUT="dist/twrp-3.5.2_10-0-channel-RecoveryConsole-DroidSpaces-${{ matrix.orientation }}.img"
+          test -s "$OUT"
+          [ "$(head -c 8 "$OUT")" = "ANDROID!" ]
+          cmp -s work/final-kernel.bin base-artifact/build/arch/arm64/boot/Image.gz-dtb || { echo "ERROR: kernel changed" >&2; exit 1; }
+          cmp -s work/final-dtbo.bin base-artifact/official-recovery-dtbo.bin || { echo "ERROR: recovery_dtbo changed" >&2; exit 1; }
+
+          cp console-src/output/recovery-console-aarch64 "dist/recovery-console-channel-aarch64-${{ matrix.orientation }}"
+          cp work/final-ramdisk.bin "dist/ramdisk-channel-recovery-console-${{ matrix.orientation }}.bin"
+          sha256sum "$OUT" > "$OUT.sha256"
+          sha256sum "dist/recovery-console-channel-aarch64-${{ matrix.orientation }}" > "dist/recovery-console-channel-aarch64-${{ matrix.orientation }}.sha256"
+
+          cat > "dist/BUILD-INFO-${{ matrix.orientation }}.txt" <<EOF
+          Device: Motorola Moto G7 Play (channel)
+          Branch: Channel-DroidSpaces-Recovery-Image-Builder
+          Source profile: Channel-Configs
+          Artifact type: recovery-as-boot boot.img
+          TWRP base: twrp-$CHANNEL_TWRP_VERSION-channel.img
+          TWRP image SHA-256: $CHANNEL_TWRP_IMG_SHA256
+          Kernel source: TeamWin/android_kernel_motorola_sdm632
+          Kernel ref: $TEAMWIN_KERNEL_REF (twrp-10.0)
+          Kernel config: official TWRP $CHANNEL_TWRP_VERSION embedded config
+          DroidSpaces config commit: $DROIDSPACES_CONFIG_COMMIT
+          DroidSpaces firewall commit: $DROIDSPACES_FIREWALL_COMMIT
+          DroidSpaces paranoid commit: $DROIDSPACES_PARANOID_COMMIT
+          DroidSpaces cgroup noprefix commit: $DROIDSPACES_CGROUP_COMMIT
+          KernelSU/ReSukiSU: not added
+          Orientation: ${{ matrix.orientation }}
+          ROTATION=${{ matrix.rotation }}
+          Console path: /system/bin/recovery-console
+          Integration: upstream Channel permanent init.rc method
+          Stock recovery service: disabled
+          Recovery Console autostart: YES
+          Console exit fallback: start recovery
+          Kernel changed by console integration: NO
+          Recovery DTBO changed by console integration: NO
+          Intended dedicated slot: boot_b
+          EOF
+
+      - name: Upload Channel DroidSpaces Recovery Console
         uses: actions/upload-artifact@v4
         with:
           name: channel-droidspaces-recovery-console-${{ matrix.orientation }}
