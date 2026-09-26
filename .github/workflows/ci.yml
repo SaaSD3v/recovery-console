@@ -22,7 +22,6 @@ jobs:
   build:
     name: Build Recovery Console
     runs-on: ubuntu-latest
-    environment: "keys"
     steps:
     - uses: actions/checkout@v4
 
@@ -89,13 +88,13 @@ jobs:
       if: ${{ github.event_name != 'pull_request' }}
       shell: bash
       env:
-        GOFILE_TOKEN: ${{ secrets.GOFILE }}
+        GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN }}
         GOFILE_FOLDER_ID: ${{ secrets.GOFILE_FOLDER_ID || vars.GOFILE_FOLDER_ID }}
         GOFILE_SOURCE: gofile-files
       run: |
         set -euo pipefail
         if [ -z "${GOFILE_TOKEN:-}" ]; then
-          echo "::error::GoFile token not found. Supported names: GOFILE_TOKEN, GOFILE_API_TOKEN, GOFILE_API_KEY, GOFILE_API, GOFILE_KEY, GOFILE or API_GOFILE."
+          echo "::error::GOFILE_TOKEN repository secret is not configured."
           exit 1
         fi
         test -d "$GOFILE_SOURCE"
