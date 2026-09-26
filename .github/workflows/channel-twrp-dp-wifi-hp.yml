@@ -1,0 +1,12 @@
+name: Channel TWRP DP WiFi-HP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: SaaSD3v/recovery-console/.github/workflows/recovery-image-builder.yml@channel-twrp-dp-wifi-hp
+    secrets: inherit
