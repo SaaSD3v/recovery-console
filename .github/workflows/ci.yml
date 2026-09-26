@@ -1,15 +1,7 @@
-name: Albus Binary CI
+name: Albus Binary
 
 on:
-  push:
-    branches: ["Albus-Configs"]
-    paths:
-      - "Makefile"
-      - "*.c"
-      - "include/**"
-      - "scripts/**"
-      - ".github/workflows/ci.yml"
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -37,6 +29,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: albus-binary
 
       - name: Select Albus rotation
         run: |
@@ -84,7 +78,7 @@ jobs:
           cp output/recovery-console-aarch64 "package/$NAME"
           cat > package/BUILD-INFO.txt <<EOF
           Device: Motorola Moto Z2 Play (albus)
-          Branch: Albus-Configs
+          Branch: albus-binary
           Artifact type: standalone Recovery Console binary
           Architecture: aarch64
           Backend: Qualcomm MDSS FBDEV
