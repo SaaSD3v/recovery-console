@@ -1,14 +1,7 @@
-name: Channel DroidSpaces Recovery-as-Boot Builder
+name: Channel Image DP
 
 on:
-  push:
-    branches: ["Channel-DroidSpaces-Recovery-Image-Builder"]
-    paths:
-      - "builder/REQUEST.env"
-      - "builder/integrate-channel-twrp-zip.sh"
-      - "builder/set-rotation.py"
-      - "builder/build-freetype.sh"
-      - ".github/workflows/recovery-image-builder.yml"
+  workflow_call:
 
 permissions:
   contents: read
@@ -38,6 +31,8 @@ jobs:
       orientation: ${{ steps.cfg.outputs.orientation }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: channel-image-dp
 
       - name: Resolve request
         id: cfg
@@ -49,12 +44,12 @@ jobs:
           source builder/REQUEST.env
           set +a
 
-          : "${SOURCE_REF:=Channel-Configs}"
+          : "${SOURCE_REF:=channel-binary}"
           : "${ORIENTATION:=all}"
           : "${TWRP_VERSION:=3.5.2_10-0}"
 
-          [ "$SOURCE_REF" = "Channel-Configs" ] || {
-            echo "ERROR: Channel recovery builder only accepts SOURCE_REF=Channel-Configs" >&2
+          [ "$SOURCE_REF" = "channel-binary" ] || {
+            echo "ERROR: Channel recovery builder only accepts SOURCE_REF=channel-binary" >&2
             exit 1
           }
           [ "$TWRP_VERSION" = "$CHANNEL_TWRP_VERSION" ] || {
@@ -304,7 +299,7 @@ jobs:
       - name: Checkout Channel recovery builder
         uses: actions/checkout@v4
         with:
-          ref: Channel-DroidSpaces-Recovery-Image-Builder
+          ref: channel-image-dp
           path: builder-tools
 
       - name: Checkout Channel binary profile
@@ -486,8 +481,8 @@ jobs:
 
           cat > "dist/BUILD-INFO-${{ matrix.orientation }}.txt" <<EOF
           Device: Motorola Moto G7 Play (channel)
-          Branch: Channel-DroidSpaces-Recovery-Image-Builder
-          Source profile: Channel-Configs
+          Branch: channel-image-dp
+          Source profile: channel-binary
           Artifact type: recovery-as-boot boot.img
           TWRP base: twrp-$CHANNEL_TWRP_VERSION-channel.img
           TWRP image SHA-256: $CHANNEL_TWRP_IMG_SHA256
