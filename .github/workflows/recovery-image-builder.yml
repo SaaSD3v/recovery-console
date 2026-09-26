@@ -1,8 +1,8 @@
-name: Channel DroidSpaces Recovery-as-Boot Builder
+name: Build Channel Wi-Fi Hotspot Recovery Console
 
 on:
   push:
-    branches: ["Channel-DroidSpaces-WiFi-RecoveryConsole-Test"]
+    branches: ["Channel-WiFi-Hotspot-RecoveryConsole-Builder"]
     paths:
       - "builder/REQUEST.env"
       - "builder/integrate-channel-twrp-zip.sh"
@@ -25,7 +25,7 @@ env:
   DROIDSPACES_PARANOID_COMMIT: "f09c342d80aaa93eb852320568b9313d2768386b"
   DROIDSPACES_CGROUP_COMMIT: "c6f0507da463205a4d6d9ca4fb1130218530feb3"
   CHANNEL_BUILD_REPO: "SaaSD3v/channel-kernel-build"
-  CHANNEL_BUILD_REF: "2cf9b68297c0b772530fe7c215960f7ec1a1fd0c"
+  CHANNEL_BUILD_REF: "twrp-3.5.2_10-0-droidspaces-wifi-hotspot"
   MAGISK_VERSION: "30.7"
   MAGISK_APK_SHA256: "e0d32d2123532860f97123d927b1bb86c4e08e6fd8a48bfc6b5bee0afae9ebd5"
   MAGISKBOOT_SHA256: "a18ecbd7981179494b7d281453d6c4e25b5c719e7d2ef7f6eba3c6be3043c58e"
@@ -454,7 +454,7 @@ jobs:
       - name: Checkout Channel recovery builder
         uses: actions/checkout@v4
         with:
-          ref: Channel-DroidSpaces-WiFi-RecoveryConsole-Test
+          ref: Channel-WiFi-Hotspot-RecoveryConsole-Builder
           path: builder-tools
 
       - name: Checkout Channel binary profile
@@ -636,7 +636,7 @@ jobs:
 
           cat > "dist/BUILD-INFO-${{ matrix.orientation }}.txt" <<EOF
           Device: Motorola Moto G7 Play (channel)
-          Branch: Channel-DroidSpaces-WiFi-RecoveryConsole-Test
+          Branch: Channel-WiFi-Hotspot-RecoveryConsole-Builder
           Source profile: Channel-Configs
           Artifact type: recovery-as-boot boot.img
           TWRP base: twrp-$CHANNEL_TWRP_VERSION-channel.img
