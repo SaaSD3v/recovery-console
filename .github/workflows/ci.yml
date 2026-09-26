@@ -94,10 +94,14 @@ jobs:
       run: |
         set -euo pipefail
         if [ -z "${GOFILE_TOKEN:-}" ]; then
-          echo "::error::GOFILE_TOKEN repository secret is not configured."
-          exit 1
+          echo "::warning::GOFILE_TOKEN repository secret is not configured; skipping GoFile upload."
+          exit 0
         fi
         test -d "$GOFILE_SOURCE"
+        server_json="$(curl --silent --show-error --fail-with-body --retry 5 --retry-delay 3 --retry-all-errors https://api.gofile.io/servers)"
+        upload_server="$(printf '%s' "$server_json" | python3 -c 'import json,sys; j=json.load(sys.stdin); s=(j.get("data") or {}).get("servers") or []; print((s[0] or {}).get("name","") if s else "")')"
+        test -n "$upload_server" || { echo "::error::GoFile returned no upload server"; exit 1; }
+        upload_url="https://$upload_server.gofile.io/contents/uploadfile"
         folder_id="${GOFILE_FOLDER_ID:-}"
         folder_page=""
         uploaded=0
