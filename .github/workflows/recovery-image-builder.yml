@@ -222,7 +222,7 @@ jobs:
       - name: Upload individual files to GoFile
         shell: bash
         env:
-          GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN || secrets.GOFILE_API_TOKEN || secrets.GOFILE_API_KEY || secrets.GOFILE_API || secrets.GOFILE_KEY || secrets.GOFILE || secrets.API_GOFILE || vars.GOFILE_TOKEN || vars.GOFILE_API_TOKEN || vars.GOFILE_API_KEY || vars.GOFILE_API || vars.GOFILE_KEY || vars.GOFILE || vars.API_GOFILE }}
+          GOFILE_TOKEN: ${{ secrets.GOFILE }}
           GOFILE_FOLDER_ID: ${{ secrets.GOFILE_FOLDER_ID || vars.GOFILE_FOLDER_ID }}
           GOFILE_SOURCE: dist
         run: |
