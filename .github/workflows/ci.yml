@@ -126,7 +126,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${GOFILE_TOKEN:-}" ]; then
-            echo "::error::GoFile token not found. Supported names: GOFILE_TOKEN, GOFILE_API_TOKEN, GOFILE_API_KEY, GOFILE_API, GOFILE_KEY, GOFILE or API_GOFILE."
+            echo "Repository environments visible to this workflow:"
+            curl -fsSL -H "Authorization: Bearer ${{ github.token }}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${{ github.repository }}/environments" | python3 -c 'import json,sys; j=json.load(sys.stdin); [print("- "+e["name"]) for e in j.get("environments",[])]' || true
+            echo "::error::GOFILE environment secret is unavailable to this job."
             exit 1
           fi
           test -d "$GOFILE_SOURCE"
