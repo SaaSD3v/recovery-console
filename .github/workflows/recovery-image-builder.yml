@@ -217,3 +217,60 @@ jobs:
             dist/BUILD-INFO-*.txt
           if-no-files-found: error
           compression-level: 0
+
+      - name: Upload individual files to GoFile
+        shell: bash
+        env:
+          GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN || secrets.GOFILE_API_TOKEN || secrets.GOFILE_API_KEY || secrets.GOFILE_API || secrets.GOFILE_KEY || secrets.GOFILE || secrets.API_GOFILE || vars.GOFILE_TOKEN || vars.GOFILE_API_TOKEN || vars.GOFILE_API_KEY || vars.GOFILE_API || vars.GOFILE_KEY || vars.GOFILE || vars.API_GOFILE }}
+          GOFILE_FOLDER_ID: ${{ secrets.GOFILE_FOLDER_ID || vars.GOFILE_FOLDER_ID }}
+          GOFILE_SOURCE: dist
+        run: |
+          set -euo pipefail
+          if [ -z "${GOFILE_TOKEN:-}" ]; then
+            echo "::error::GoFile token not found. Supported names: GOFILE_TOKEN, GOFILE_API_TOKEN, GOFILE_API_KEY, GOFILE_API, GOFILE_KEY, GOFILE or API_GOFILE."
+            exit 1
+          fi
+          test -d "$GOFILE_SOURCE"
+          folder_id="${GOFILE_FOLDER_ID:-}"
+          folder_page=""
+          uploaded=0
+          summary="$RUNNER_TEMP/gofile-files.md"
+          : > "$summary"
+          while IFS= read -r -d '' file; do
+            args=(--silent --show-error --fail-with-body --retry 4 --retry-delay 2 --retry-all-errors
+              -H "Authorization: Bearer $GOFILE_TOKEN"
+              -F "file=@$file")
+            if [ -n "$folder_id" ]; then
+              args+=(-F "folderId=$folder_id")
+            fi
+            response="$(curl "${args[@]}" https://upload.gofile.io/uploadfile)"
+            mapfile -t meta < <(printf '%s' "$response" | python3 -c 'import json,sys; j=json.load(sys.stdin); d=j.get("data") or {}; print(j.get("status","")); print(d.get("parentFolder","")); print(d.get("downloadPage","")); print(d.get("parentFolderCode",""))')
+            status="${meta[0]:-}"
+            parent="${meta[1]:-}"
+            page="${meta[2]:-}"
+            parent_code="${meta[3]:-}"
+            if [ "$status" != "ok" ]; then
+              echo "::error::GoFile rejected $(basename "$file")"
+              printf '%s\n' "$response" >&2
+              exit 1
+            fi
+            if [ -z "$folder_id" ]; then folder_id="$parent"; fi
+            if [ -z "$folder_page" ] && [ -n "$parent_code" ]; then folder_page="https://gofile.io/d/$parent_code"; fi
+            name="$(basename "$file")"
+            if [ -n "$page" ]; then
+              printf -- '- [%s](%s)\n' "$name" "$page" >> "$summary"
+            else
+              printf -- '- %s\n' "$name" >> "$summary"
+            fi
+            uploaded=$((uploaded + 1))
+          done < <(find "$GOFILE_SOURCE" -type f -print0 | sort -z)
+          if [ "$uploaded" -eq 0 ]; then
+            echo "::error::No files found in $GOFILE_SOURCE for GoFile upload"
+            exit 1
+          fi
+          {
+            echo "### GoFile — $uploaded individual files"
+            [ -z "$folder_page" ] || echo "Folder: $folder_page"
+            echo
+            cat "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
