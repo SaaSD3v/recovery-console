@@ -125,8 +125,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${GOFILE_TOKEN:-}" ]; then
-            echo "::error::GOFILE_TOKEN repository secret is unavailable to this job."
-            exit 1
+            echo "::warning::GOFILE_TOKEN repository secret is not configured; skipping GoFile upload."
+            exit 0
           fi
           test -d "$GOFILE_SOURCE"
           server_json="$(curl --silent --show-error --fail-with-body --retry 5 --retry-delay 3 --retry-all-errors https://api.gofile.io/servers)"
