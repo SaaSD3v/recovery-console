@@ -1,15 +1,7 @@
-name: Channel Binary CI
+name: Channel Binary
 
 on:
-  push:
-    branches: ["Channel-Configs"]
-    paths:
-      - "Makefile"
-      - "*.c"
-      - "include/**"
-      - "scripts/**"
-      - ".github/workflows/ci.yml"
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -37,6 +29,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: channel-binary
 
       - name: Select Channel rotation
         run: |
@@ -84,7 +78,7 @@ jobs:
           cp output/recovery-console-aarch64 "package/$NAME"
           cat > package/BUILD-INFO.txt <<EOF
           Device: Motorola Moto G7 Play (channel)
-          Branch: Channel-Configs
+          Branch: channel-binary
           Artifact type: standalone Recovery Console binary
           Architecture: aarch64
           Backend: Qualcomm MDSS FBDEV
