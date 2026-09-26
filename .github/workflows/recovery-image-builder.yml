@@ -296,7 +296,6 @@ jobs:
     name: Channel permanent - ${{ matrix.orientation }}
     needs: [prepare, base]
     runs-on: ubuntu-latest
-    environment: "keys"
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -530,13 +529,13 @@ jobs:
       - name: Upload individual files to GoFile
         shell: bash
         env:
-          GOFILE_TOKEN: ${{ secrets.GOFILE }}
+          GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN }}
           GOFILE_FOLDER_ID: ${{ secrets.GOFILE_FOLDER_ID || vars.GOFILE_FOLDER_ID }}
           GOFILE_SOURCE: dist
         run: |
           set -euo pipefail
           if [ -z "${GOFILE_TOKEN:-}" ]; then
-            echo "::error::GoFile token not found. Supported names: GOFILE_TOKEN, GOFILE_API_TOKEN, GOFILE_API_KEY, GOFILE_API, GOFILE_KEY, GOFILE or API_GOFILE."
+            echo "::error::GOFILE_TOKEN repository secret is not configured."
             exit 1
           fi
           test -d "$GOFILE_SOURCE"
