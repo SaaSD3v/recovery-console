@@ -1,0 +1,12 @@
+name: Albus Image DP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: SaaSD3v/recovery-console/.github/workflows/recovery-image-builder.yml@albus-image-dp
+    secrets: inherit
