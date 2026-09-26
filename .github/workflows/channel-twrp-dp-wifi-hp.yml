@@ -1,0 +1,733 @@
+name: Channel TWRP DP WiFi-HP
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CHANNEL_TWRP_VERSION: "3.5.2_10-0"
+  CHANNEL_TWRP_SHA256: "2c43cee3d2fc64c7632d6f2f49567f59a563446a34b073678eda8b77cb5bd74c"
+  CHANNEL_TWRP_IMG_SHA256: "486c3e11250c1233112372129c796b55e0cd5d0f4ac605906d90b0f9b574056c"
+  TEAMWIN_KERNEL_REPO: "https://github.com/TeamWin/android_kernel_motorola_sdm632.git"
+  TEAMWIN_KERNEL_REF: "0fba78718c25ef55a211dd7608cb255a226dd8bf"
+  OFFICIAL_TWRP_CONFIG_SHA256: "bb1430e6ceccb76c1f0a5d8633e10f8aa71933953cb1ee9cee29b1613c46b335"
+  DROIDSPACES_CONFIG_COMMIT: "ee9637adaa0c38f9105feb4902531d608298df81"
+  DROIDSPACES_FIREWALL_COMMIT: "e310252413ffb052e86092d32f7f8b4fabd5eae2"
+  DROIDSPACES_PARANOID_COMMIT: "f09c342d80aaa93eb852320568b9313d2768386b"
+  DROIDSPACES_CGROUP_COMMIT: "c6f0507da463205a4d6d9ca4fb1130218530feb3"
+  CHANNEL_BUILD_REPO: "SaaSD3v/channel-kernel-build"
+  CHANNEL_BUILD_REF: "twrp-3.5.2_10-0-droidspaces-wifi-hotspot"
+  MAGISK_VERSION: "30.7"
+  MAGISK_APK_SHA256: "e0d32d2123532860f97123d927b1bb86c4e08e6fd8a48bfc6b5bee0afae9ebd5"
+  MAGISKBOOT_SHA256: "a18ecbd7981179494b7d281453d6c4e25b5c719e7d2ef7f6eba3c6be3043c58e"
+
+jobs:
+  prepare:
+    name: Read Channel request
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.cfg.outputs.matrix }}
+      source_ref: ${{ steps.cfg.outputs.source_ref }}
+      orientation: ${{ steps.cfg.outputs.orientation }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: channel-twrp-dp-wifi-hp
+
+      - name: Resolve request
+        id: cfg
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f builder/REQUEST.env
+          set -a
+          source builder/REQUEST.env
+          set +a
+
+          : "${SOURCE_REF:=channel-binary}"
+          : "${ORIENTATION:=all}"
+          : "${TWRP_VERSION:=3.5.2_10-0}"
+
+          [ "$SOURCE_REF" = "channel-binary" ] || {
+            echo "ERROR: Channel recovery builder only accepts SOURCE_REF=channel-binary" >&2
+            exit 1
+          }
+          [ "$TWRP_VERSION" = "$CHANNEL_TWRP_VERSION" ] || {
+            echo "ERROR: only the validated TWRP $CHANNEL_TWRP_VERSION base is accepted" >&2
+            exit 1
+          }
+
+          case "$ORIENTATION" in
+            all)
+              MATRIX='{"include":[
+                {"rotation":0,"degrees":"0deg","orientation":"portrait-0"},
+                {"rotation":1,"degrees":"90deg","orientation":"landscape-90"},
+                {"rotation":2,"degrees":"180deg","orientation":"portrait-180"},
+                {"rotation":3,"degrees":"270deg","orientation":"landscape-270"}
+              ]}'
+              ;;
+            portrait-0)
+              MATRIX='{"include":[{"rotation":0,"degrees":"0deg","orientation":"portrait-0"}]}'
+              ;;
+            landscape-90)
+              MATRIX='{"include":[{"rotation":1,"degrees":"90deg","orientation":"landscape-90"}]}'
+              ;;
+            portrait-180)
+              MATRIX='{"include":[{"rotation":2,"degrees":"180deg","orientation":"portrait-180"}]}'
+              ;;
+            landscape-270)
+              MATRIX='{"include":[{"rotation":3,"degrees":"270deg","orientation":"landscape-270"}]}'
+              ;;
+            *)
+              echo "ERROR: unsupported ORIENTATION=$ORIENTATION" >&2
+              exit 1
+              ;;
+          esac
+
+          MATRIX=$(printf '%s' "$MATRIX" | tr -d '\n' | tr -d ' ')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          echo "orientation=$ORIENTATION" >> "$GITHUB_OUTPUT"
+          echo "Request: source=$SOURCE_REF orientation=$ORIENTATION TWRP=$TWRP_VERSION"
+
+
+  base:
+    name: Build proven Channel TWRP DroidSpaces + Wi-Fi base
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout proven Channel Wi-Fi payload
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CHANNEL_BUILD_REPO }}
+          ref: ${{ env.CHANNEL_BUILD_REF }}
+          path: channel-build-src
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git curl wget ca-certificates bc bison flex libssl-dev libelf-dev make libncurses-dev \
+            python3 xz-utils cpio zip unzip file xxd lz4 autoconf automake libtool pkg-config \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user-static
+
+      - name: Clone official TeamWin twrp-10.0 kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init kernel
+          git -C kernel remote add origin "$TEAMWIN_KERNEL_REPO"
+          git -C kernel fetch --depth=1 origin "$TEAMWIN_KERNEL_REF"
+          git -C kernel checkout --detach FETCH_HEAD
+          git -C kernel log -1 --format='%H %s'
+          if grep -A8 'static int __init populate_rootfs' kernel/init/initramfs.c | grep -q '^[[:space:]]*if (do_skip_initramfs)'; then
+            echo "ERROR: TeamWin source still honors skip_initramfs" >&2
+            exit 1
+          fi
+
+      - name: Download validated official TWRP image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p input
+          NAME="twrp-$CHANNEL_TWRP_VERSION-channel.img"
+          PAGE="https://dl.twrp.me/channel/$NAME.html"
+          HTML=$(curl -fLsS --retry 3 --retry-delay 2 -A 'Mozilla/5.0 GitHub-Actions Channel-DroidSpaces-Builder' "$PAGE")
+          HREF=$(printf '%s' "$HTML" | grep -oE 'href="[^"]*twrp-3\.5\.2_10-0-channel\.img"' | head -n1 | cut -d'"' -f2 || true)
+          case "$HREF" in
+            http://*|https://*) FILE_URL="$HREF" ;;
+            /*) FILE_URL="https://dl.twrp.me$HREF" ;;
+            "") FILE_URL="" ;;
+            *) FILE_URL="https://dl.twrp.me/channel/$HREF" ;;
+          esac
+          ok=0
+          for URL in "https://eu.dl.twrp.me/channel/$NAME" "$FILE_URL" "https://dl.twrp.me/channel/$NAME?download=1"; do
+            [ -n "$URL" ] || continue
+            rm -f "input/$NAME.part"
+            if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 -A 'Mozilla/5.0 GitHub-Actions Channel-DroidSpaces-Builder' -e "$PAGE" -o "input/$NAME.part" "$URL"; then
+              if [ "$(stat -c%s "input/$NAME.part")" -gt 20000000 ] && [ "$(head -c 8 "input/$NAME.part")" = "ANDROID!" ]; then
+                mv "input/$NAME.part" "input/$NAME"; ok=1; break
+              fi
+            fi
+          done
+          [ "$ok" -eq 1 ]
+          echo "$CHANNEL_TWRP_IMG_SHA256  input/$NAME" | sha256sum -c -
+
+      - name: Extract exact official TWRP config
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+          b=Path("input/twrp-3.5.2_10-0-channel.img").read_bytes()
+          if b[:8]!=b"ANDROID!": raise SystemExit("bad boot magic")
+          k=struct.unpack_from("<I",b,8)[0]; p=struct.unpack_from("<I",b,36)[0]
+          Path("official-twrp-Image.gz-dtb").write_bytes(b[p:p+k])
+          PY
+          chmod +x kernel/scripts/extract-ikconfig
+          kernel/scripts/extract-ikconfig official-twrp-Image.gz-dtb > official-twrp.config
+          echo "$OFFICIAL_TWRP_CONFIG_SHA256  official-twrp.config" | sha256sum -c -
+          grep -qx 'CONFIG_LOCALVERSION="-perf"' official-twrp.config
+          grep -qx 'CONFIG_SCHED_CORE_CTL=y' official-twrp.config
+          grep -qx 'CONFIG_CMA_AREAS=7' official-twrp.config
+
+      - name: Apply all DroidSpaces fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 "https://github.com/SaaSD3v/android_kernel_motorola_sdm632/commit/$DROIDSPACES_CGROUP_COMMIT.patch" -o /tmp/cgroup.patch
+          git -C kernel apply --check /tmp/cgroup.patch
+          git -C kernel apply /tmp/cgroup.patch
+          cat > droidspaces.fragment <<'EOF'
+          CONFIG_SYSVIPC=y
+          CONFIG_POSIX_MQUEUE=y
+          CONFIG_CGROUP_PIDS=y
+          CONFIG_CGROUP_DEVICE=y
+          CONFIG_MEMCG=y
+          CONFIG_UTS_NS=y
+          CONFIG_USER_NS=y
+          CONFIG_PID_NS=y
+          CONFIG_IPC_NS=y
+          CONFIG_BRIDGE_NETFILTER=y
+          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+          CONFIG_CGROUP_NET_PRIO=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_VETH=y
+          CONFIG_OVERLAY_FS=y
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_NET=y
+          CONFIG_NETFILTER_XT_SET=y
+          CONFIG_NETFILTER_XT_MATCH_RECENT=y
+          # CONFIG_ANDROID_PARANOID_NETWORK is not set
+          EOF
+
+      - name: Build proven recovery Wi-Fi and networking userspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$GITHUB_WORKSPACE/channel-build-src"
+          bash -n "$SRC/recovery-wifi/build-userspace.sh"
+          sh -n "$SRC/recovery-wifi/wifi"
+          sh -n "$SRC/recovery-wifi/wifi-udhcpc.script"
+          sh -n "$SRC/recovery-wifi/recovery-time-sync"
+          sh -n "$SRC/recovery-wifi/ds-recovery-check"
+          chmod +x "$SRC/recovery-wifi/build-userspace.sh"
+          (
+            cd "$SRC"
+            GITHUB_WORKSPACE="$SRC" DEVICE=channel recovery-wifi/build-userspace.sh
+          )
+
+          test -x "$SRC/recovery-wifi/out/busybox.ds"
+          test -x "$SRC/recovery-wifi/out/iptables.ds"
+          file "$SRC/recovery-wifi/out/busybox.ds" | grep -q 'statically linked'
+          file "$SRC/recovery-wifi/out/iptables.ds" | grep -q 'statically linked'
+
+          QEMU="$(command -v qemu-aarch64-static)"
+          "$QEMU" "$SRC/recovery-wifi/out/busybox.ds" --list > busybox-applets.txt
+          for applet in date ntpd timeout udhcpc udhcpd ip mount ping; do
+            grep -qx "$applet" busybox-applets.txt || {
+              echo "ERROR: BusyBox missing required applet: $applet" >&2
+              exit 1
+            }
+          done
+
+          SMOKE="$RUNNER_TEMP/xtables-smoke"
+          rm -rf "$SMOKE"
+          mkdir -p "$SMOKE"
+          cp "$SRC/recovery-wifi/out/iptables.ds" "$SMOKE/iptables.ds"
+          ln -s iptables.ds "$SMOKE/iptables"
+          "$QEMU" "$SMOKE/iptables" --version | grep -Eq '^iptables v1\.6\.2'
+
+      - name: Stage Wi-Fi hotspot DroidSpaces and time sync in kernel initramfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$GITHUB_WORKSPACE/channel-build-src/recovery-wifi"
+          ROOT="$GITHUB_WORKSPACE/kernel/recovery-initramfs"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/sbin" "$ROOT/lib/firmware/wlan/prima"
+
+          install -m 0755 "$SRC/out/wifi" "$ROOT/sbin/wifi"
+          install -m 0755 "$SRC/out/busybox.ds" "$ROOT/sbin/busybox.ds"
+          install -m 0755 "$SRC/out/iptables.ds" "$ROOT/sbin/iptables.ds"
+          ln -s iptables.ds "$ROOT/sbin/iptables"
+          ln -s iptables.ds "$ROOT/sbin/iptables-save"
+          ln -s iptables.ds "$ROOT/sbin/iptables-restore"
+          install -m 0755 "$SRC/out/wpa_supplicant.ds" "$ROOT/sbin/wpa_supplicant.ds"
+          install -m 0755 "$SRC/out/hostapd.ds" "$ROOT/sbin/hostapd.ds"
+          install -m 0755 "$SRC/out/iw.ds" "$ROOT/sbin/iw.ds"
+          install -m 0755 "$SRC/out/wpa_cli.ds" "$ROOT/sbin/wpa_cli.ds"
+          install -m 0755 "$SRC/out/wpa_passphrase.ds" "$ROOT/sbin/wpa_passphrase.ds"
+          install -m 0755 "$SRC/out/wifi-udhcpc.script" "$ROOT/sbin/wifi-udhcpc.script"
+          install -m 0755 "$SRC/out/wcnss-recovery" "$ROOT/sbin/wcnss-recovery"
+          install -m 0755 "$SRC/out/recovery-time-sync" "$ROOT/sbin/recovery-time-sync"
+          install -m 0755 "$SRC/ds-recovery-check" "$ROOT/sbin/ds-recovery-check"
+          install -m 0644 "$SRC/out/WCNSS_qcom_cfg.ini" "$ROOT/lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini"
+
+          sudo chown -R 0:0 "$ROOT"
+
+          cat > wifi-initramfs.fragment <<EOF
+          CONFIG_INITRAMFS_SOURCE="$ROOT"
+          CONFIG_INITRAMFS_ROOT_UID=0
+          CONFIG_INITRAMFS_ROOT_GID=0
+          EOF
+
+          python3 <<'PY'
+          from pathlib import Path
+          p=Path("kernel/usr/Makefile")
+          lines=p.read_text().splitlines(keepends=True)
+          anchor=[i for i,line in enumerate(lines)
+                  if line.lstrip().startswith("suffix_$(CONFIG_RD_GZIP)") and ".gz" in line]
+          if len(anchor)!=1:
+              raise SystemExit(f"expected one CONFIG_RD_GZIP suffix line, found {len(anchor)}")
+          i=anchor[0]+1
+          lines[i:i]=[
+              "\n",
+              "# Recovery Wi-Fi: compact built-in initramfs without changing RD_* support.\n",
+              "suffix_y := .lzma\n",
+          ]
+          p.write_text("".join(lines))
+          PY
+
+          python3 <<'PY'
+          from pathlib import Path
+          p=Path("kernel/scripts/gen_initramfs_list.sh")
+          s=p.read_text()
+          old='compr="lzma -9 -f"'
+          new='compr="lzma -9 -f --lzma1=dict=8MiB"'
+          if s.count(old)!=1:
+              raise SystemExit(f"expected one initramfs LZMA compressor, found {s.count(old)}")
+          p.write_text(s.replace(old,new,1))
+          PY
+
+          find "$ROOT" -type f -printf '%P %s bytes\n' | sort
+
+      - name: Download kernel toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLANG_DIR="$GITHUB_WORKSPACE/toolchains/clang"
+          CLANG_ARCHIVE="$GITHUB_WORKSPACE/clang.tar.gz"
+          PRIMARY="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-qpr3-release/clang-r353983c1.tar.gz"
+          MIRROR="https://github.com/msft-mirror-aosp/platform.prebuilts.clang.host.linux-x86.git"
+          MIRROR_COMMIT="7e2d7f3e8dba20760df041bf90ca5a15913631c8"
+
+          rm -rf "$CLANG_DIR" "$CLANG_ARCHIVE"
+          mkdir -p "$CLANG_DIR"
+          if curl -fL --retry 5 "$PRIMARY" -o "$CLANG_ARCHIVE"; then
+            tar -xzf "$CLANG_ARCHIVE" -C "$CLANG_DIR"
+          else
+            echo "android.googlesource unavailable; using pinned AOSP GitHub mirror"
+            rm -rf "$CLANG_DIR" "$RUNNER_TEMP/aosp-clang-mirror"
+            git init "$RUNNER_TEMP/aosp-clang-mirror"
+            git -C "$RUNNER_TEMP/aosp-clang-mirror" remote add origin "$MIRROR"
+            git -C "$RUNNER_TEMP/aosp-clang-mirror" sparse-checkout init --cone
+            git -C "$RUNNER_TEMP/aosp-clang-mirror" sparse-checkout set clang-r353983c1
+            git -C "$RUNNER_TEMP/aosp-clang-mirror" fetch --depth=1 --filter=blob:none origin "$MIRROR_COMMIT"
+            git -C "$RUNNER_TEMP/aosp-clang-mirror" checkout --detach FETCH_HEAD
+            cp -a "$RUNNER_TEMP/aosp-clang-mirror/clang-r353983c1/." "$CLANG_DIR/"
+          fi
+          test -x "$CLANG_DIR/bin/clang"
+          "$CLANG_DIR/bin/clang" --version | grep -Fq 'r353983c1'
+
+          git clone --depth=1 -b android11-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchains/gcc64
+          git clone --depth=1 -b android11-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 toolchains/gcc32
+          echo "CLANG_BIN=$CLANG_DIR/bin" >> "$GITHUB_ENV"
+          echo "GCC64_BIN=$GITHUB_WORKSPACE/toolchains/gcc64/bin" >> "$GITHUB_ENV"
+          echo "GCC32_BIN=$GITHUB_WORKSPACE/toolchains/gcc32/bin" >> "$GITHUB_ENV"
+
+      - name: Configure TWRP plus DroidSpaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+          mkdir -p build
+          cp official-twrp.config build/.config
+          make -C kernel O="$GITHUB_WORKSPACE/build" ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 olddefconfig
+          chmod +x kernel/scripts/kconfig/merge_config.sh
+          ( cd kernel && scripts/kconfig/merge_config.sh -m -O "$GITHUB_WORKSPACE/build" "$GITHUB_WORKSPACE/build/.config" "$GITHUB_WORKSPACE/droidspaces.fragment" "$GITHUB_WORKSPACE/wifi-initramfs.fragment" )
+          make -C kernel O="$GITHUB_WORKSPACE/build" ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 olddefconfig
+          CONFIG=build/.config
+          for s in CONFIG_SYSVIPC CONFIG_POSIX_MQUEUE CONFIG_CGROUP_PIDS CONFIG_CGROUP_DEVICE CONFIG_MEMCG CONFIG_UTS_NS CONFIG_USER_NS CONFIG_PID_NS CONFIG_IPC_NS CONFIG_BRIDGE_NETFILTER CONFIG_NETFILTER_XT_MATCH_ADDRTYPE CONFIG_CGROUP_NET_PRIO CONFIG_DEVTMPFS CONFIG_VETH CONFIG_OVERLAY_FS CONFIG_IP_SET CONFIG_IP_SET_HASH_IP CONFIG_IP_SET_HASH_NET CONFIG_NETFILTER_XT_SET CONFIG_NETFILTER_XT_MATCH_RECENT; do
+            grep -qx "$s=y" "$CONFIG" || { echo "ERROR: missing $s=y" >&2; exit 1; }
+          done
+          grep -qx '# CONFIG_ANDROID_PARANOID_NETWORK is not set' "$CONFIG"
+          grep -Fxq "CONFIG_INITRAMFS_SOURCE=\"$GITHUB_WORKSPACE/kernel/recovery-initramfs\"" "$CONFIG"
+          cp "$CONFIG" droidspaces-final.config
+
+      - name: Build Image.gz-dtb
+        env:
+          KBUILD_BUILD_USER: nobody
+          KBUILD_BUILD_HOST: android-build
+          KBUILD_BUILD_TIMESTAMP: "Thu Dec 17 04:30:48 PST 2020"
+          KBUILD_BUILD_VERSION: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+          make -C kernel O="$GITHUB_WORKSPACE/build" ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j"$(nproc)" Image.gz-dtb
+          sha256sum build/arch/arm64/boot/Image.gz-dtb > kernel.sha256
+
+          INITRAMFS=$(find build/usr -maxdepth 1 -type f -name 'initramfs_data.cpio*' | head -n1)
+          test -n "$INITRAMFS"
+          case "$INITRAMFS" in
+            *.lzma) xz --format=lzma -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio ;;
+            *.cpio) cp "$INITRAMFS" /tmp/kernel-initramfs.cpio ;;
+            *) echo "ERROR: unexpected initramfs format: $INITRAMFS" >&2; exit 1 ;;
+          esac
+          cpio -it < /tmp/kernel-initramfs.cpio > kernel-initramfs-files.txt
+          for path in sbin/wifi sbin/iptables.ds sbin/recovery-time-sync sbin/ds-recovery-check; do
+            grep -Fxq "$path" kernel-initramfs-files.txt || {
+              echo "ERROR: missing from internal initramfs: $path" >&2
+              exit 1
+            }
+          done
+
+      - name: Build reusable DroidSpaces TWRP base
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+          b=Path("input/twrp-3.5.2_10-0-channel.img").read_bytes()
+          nk=Path("build/arch/arm64/boot/Image.gz-dtb").read_bytes()
+          def al(v,a): return (v+a-1)//a*a
+          ks=struct.unpack_from("<I",b,8)[0]; rs=struct.unpack_from("<I",b,16)[0]; ss=struct.unpack_from("<I",b,24)[0]
+          page=struct.unpack_from("<I",b,36)[0]; hv=struct.unpack_from("<I",b,40)[0]
+          rds=struct.unpack_from("<I",b,1632)[0]; rdo=struct.unpack_from("<Q",b,1636)[0]; hs=struct.unpack_from("<I",b,1644)[0]
+          if b[:8]!=b"ANDROID!" or hv!=1 or hs!=1648: raise SystemExit("unexpected header")
+          ko=page; ro=al(ko+ks,page); so=al(ro+rs,page); erdo=al(so+ss,page)
+          if rds and rdo!=erdo: raise SystemExit("bad recovery_dtbo offset")
+          ok=b[ko:ko+ks]; rd=b[ro:ro+rs]; sec=b[so:so+ss]; dt=b[rdo:rdo+rds]; tail=b[rdo+rds:]
+          def build(k):
+              h=bytearray(b[:page]); struct.pack_into("<I",h,8,len(k))
+              nr=al(page+len(k),page); ns=al(nr+rs,page); nd=al(ns+ss,page)
+              if rds: struct.pack_into("<Q",h,1636,nd)
+              o=bytearray(h); o+=k; o+=bytes(nr-len(o)); o+=rd; o+=bytes(ns-len(o)); o+=sec; o+=bytes(nd-len(o)); o+=dt; o+=tail
+              return bytes(o)
+          if build(ok)!=b: raise SystemExit("base reconstruction mismatch")
+          out=build(nk)
+          if len(out)>33554432: raise SystemExit("base too large")
+          Path("channel-twrp-3.5.2_10-0-droidspaces-base.img").write_bytes(out)
+          Path("official-stock-ramdisk.bin").write_bytes(rd)
+          Path("official-recovery-dtbo.bin").write_bytes(dt)
+          PY
+          sha256sum channel-twrp-3.5.2_10-0-droidspaces-base.img > base-image.sha256
+
+      - name: Upload reusable DroidSpaces base
+        uses: actions/upload-artifact@v4
+        with:
+          name: channel-droidspaces-wifi-base-${{ github.run_id }}
+          path: |
+            channel-twrp-3.5.2_10-0-droidspaces-base.img
+            build/arch/arm64/boot/Image.gz-dtb
+            official-twrp.config
+            droidspaces-final.config
+            official-stock-ramdisk.bin
+            official-recovery-dtbo.bin
+            kernel.sha256
+            base-image.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  build:
+    name: Channel permanent - ${{ matrix.orientation }}
+    needs: [prepare, base]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout Channel recovery builder
+        uses: actions/checkout@v4
+        with:
+          ref: channel-twrp-dp-wifi-hp
+          path: builder-tools
+
+      - name: Checkout Channel binary profile
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_ref }}
+          path: console-src
+
+      - name: Download proven DroidSpaces TWRP base
+        uses: actions/download-artifact@v4
+        with:
+          name: channel-droidspaces-wifi-base-${{ github.run_id }}
+          path: base-artifact
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl unzip zip cpio file xxd xz-utils lz4
+
+      - name: Download aarch64 musl toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/toolchains"
+          cd "$HOME/toolchains"
+          curl -fL --retry 3 --retry-delay 2 --connect-timeout 30             -o aarch64-linux-musl-cross.tar.gz             "https://github.com/ravindu644/Droidspaces-OSS/releases/download/compilers/aarch64-linux-musl-cross.tar.gz"
+          tar -xzf aarch64-linux-musl-cross.tar.gz
+          "$HOME/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" --version
+
+      - name: Select Channel orientation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 builder-tools/builder/set-rotation.py             console-src/include/config.h             '${{ matrix.rotation }}'
+          grep -E '^#define[[:space:]]+(CHANNEL_ROTATION|ROTATION)[[:space:]]+' console-src/include/config.h
+
+      - name: Build FreeType
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x builder-tools/builder/build-freetype.sh
+          builder-tools/builder/build-freetype.sh aarch64-linux-musl "$GITHUB_WORKSPACE/console-src"
+
+      - name: Build Channel Recovery Console
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd console-src
+          make clean
+          make aarch64 V=1
+          BIN=output/recovery-console-aarch64
+          test -s "$BIN"
+          chmod 0755 "$BIN"
+          file "$BIN"
+          if readelf -l "$BIN" | grep -q 'Requesting program interpreter'; then
+            echo "ERROR: recovery-console must be static" >&2
+            exit 1
+          fi
+          sha256sum "$BIN"
+
+      - name: Download validated official TeamWin installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p input
+          NAME="twrp-installer-$CHANNEL_TWRP_VERSION-channel.zip"
+          PAGE="https://dl.twrp.me/channel/$NAME.html"
+
+          PAGE_HTML=$(curl -fLsS --retry 3 --retry-delay 2             -A 'Mozilla/5.0 GitHub-Actions Recovery-Console-Builder' "$PAGE")
+
+          FILE_HREF=$(printf '%s' "$PAGE_HTML"             | grep -oE 'href="[^"]*twrp-installer-[^"]*-channel\.zip"'             | head -n1 | cut -d'"' -f2)
+
+          case "$FILE_HREF" in
+            http://*|https://*) FILE_URL="$FILE_HREF" ;;
+            /*) FILE_URL="https://dl.twrp.me$FILE_HREF" ;;
+            *) FILE_URL="https://dl.twrp.me/channel/$FILE_HREF" ;;
+          esac
+
+          ok=0
+          for URL in             "https://eu.dl.twrp.me/channel/$NAME"             "$FILE_URL"             "https://dl.twrp.me/channel/$NAME?download=1"; do
+            rm -f "input/$NAME.part"
+            if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30               -A 'Mozilla/5.0 GitHub-Actions Recovery-Console-Builder'               -e "$PAGE" -o "input/$NAME.part" "$URL" &&
+              unzip -t "input/$NAME.part" >/dev/null 2>&1; then
+              mv "input/$NAME.part" "input/$NAME"
+              ok=1
+              break
+            fi
+          done
+          [ "$ok" -eq 1 ]
+
+          echo "$CHANNEL_TWRP_SHA256  input/$NAME" | sha256sum -c -
+          unzip -Z1 "input/$NAME" | grep -Eq '^ramdisk-(twrp|recovery)\.cpio$'
+          unzip -Z1 "input/$NAME" | grep -q '^META-INF/com/google/android/update-binary$'
+          unzip -Z1 "input/$NAME" | grep -q '^magiskboot$'
+
+      - name: Install pinned host magiskboot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl -fL --retry 3 --retry-delay 2             -o "tools/Magisk-v$MAGISK_VERSION.apk"             "https://github.com/topjohnwu/Magisk/releases/download/v$MAGISK_VERSION/Magisk-v$MAGISK_VERSION.apk"
+          echo "$MAGISK_APK_SHA256  tools/Magisk-v$MAGISK_VERSION.apk" | sha256sum -c -
+          unzip -p "tools/Magisk-v$MAGISK_VERSION.apk"             lib/x86_64/libmagiskboot.so > tools/magiskboot
+          chmod 0755 tools/magiskboot
+          echo "$MAGISKBOOT_SHA256  tools/magiskboot" | sha256sum -c -
+
+      - name: Integrate permanent Recovery Console and assemble DroidSpaces image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist work
+          chmod +x builder-tools/builder/integrate-channel-twrp-zip.sh
+          BASE="input/twrp-installer-$CHANNEL_TWRP_VERSION-channel.zip"
+          OUTZIP="work/channel-console-${{ matrix.orientation }}.zip"
+          STOCK_NAME=$(unzip -Z1 "$BASE" | grep -E '^ramdisk-(twrp|recovery)\.cpio$' | head -n1)
+          unzip -p "$BASE" "$STOCK_NAME" > work/installer-stock-ramdisk.bin
+          builder-tools/builder/integrate-channel-twrp-zip.sh tools/magiskboot "$BASE" console-src/output/recovery-console-aarch64 "$OUTZIP" 'u:r:recovery:s0'
+          FINAL_NAME=$(unzip -Z1 "$OUTZIP" | grep -E '^ramdisk-(twrp|recovery)\.cpio$' | head -n1)
+          unzip -p "$OUTZIP" "$FINAL_NAME" > work/integrated-installer-ramdisk.bin
+
+          # The official Channel installer ramdisk is not byte-identical to the
+          # ramdisk embedded in the standalone TWRP boot.img. This is expected.
+          # Keep the already-integrated installer ramdisk exactly as produced by
+          # the proven Channel permanent integration path. Both use LZMA.
+          MAGIC=$(xxd -p -l 8 work/integrated-installer-ramdisk.bin | tr -d '\n')
+          case "$MAGIC" in
+            5d000000*) : ;;
+            *) echo "ERROR: expected LZMA integrated Channel ramdisk, magic=$MAGIC" >&2; exit 1 ;;
+          esac
+          cp work/integrated-installer-ramdisk.bin work/final-ramdisk.bin
+
+          # Validate the integrated ramdisk can be decompressed and contains the
+          # permanent Recovery Console payload/service edits before boot packing.
+          tools/magiskboot decompress work/final-ramdisk.bin work/final-ramdisk.raw
+          tools/magiskboot cpio work/final-ramdisk.raw "exists system/bin/recovery-console" >/dev/null
+          tools/magiskboot cpio work/final-ramdisk.raw "exists init.rc" >/dev/null
+          tools/magiskboot cpio work/final-ramdisk.raw "exists init.recovery.service.rc" >/dev/null
+
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+          b=Path("base-artifact/channel-twrp-3.5.2_10-0-droidspaces-base.img").read_bytes()
+          stock_exp=Path("base-artifact/official-stock-ramdisk.bin").read_bytes()
+          newrd=Path("work/final-ramdisk.bin").read_bytes()
+          outp=Path("dist/twrp-3.5.2_10-0-channel-RecoveryConsole-DroidSpaces-WiFi-${{ matrix.orientation }}.img")
+          def al(v,a): return (v+a-1)//a*a
+          ks=struct.unpack_from("<I",b,8)[0]; rs=struct.unpack_from("<I",b,16)[0]; ss=struct.unpack_from("<I",b,24)[0]
+          page=struct.unpack_from("<I",b,36)[0]; hv=struct.unpack_from("<I",b,40)[0]
+          rds=struct.unpack_from("<I",b,1632)[0]; rdo=struct.unpack_from("<Q",b,1636)[0]; hs=struct.unpack_from("<I",b,1644)[0]
+          if b[:8]!=b"ANDROID!" or hv!=1 or hs!=1648: raise SystemExit("unexpected header")
+          ko=page; ro=al(ko+ks,page); so=al(ro+rs,page); erdo=al(so+ss,page)
+          if rds and rdo!=erdo: raise SystemExit("bad recovery_dtbo offset")
+          k=b[ko:ko+ks]; stock=b[ro:ro+rs]; sec=b[so:so+ss]; dt=b[rdo:rdo+rds]; tail=b[rdo+rds:]
+          if stock!=stock_exp: raise SystemExit("stock ramdisk mismatch")
+          def build(rd):
+              h=bytearray(b[:page]); struct.pack_into("<I",h,16,len(rd))
+              nr=al(ko+ks,page); ns=al(nr+len(rd),page); nd=al(ns+ss,page)
+              if rds: struct.pack_into("<Q",h,1636,nd)
+              o=bytearray(h); o+=k; o+=bytes(nr-len(o)); o+=rd; o+=bytes(ns-len(o)); o+=sec; o+=bytes(nd-len(o)); o+=dt; o+=tail
+              return bytes(o)
+          if build(stock)!=b: raise SystemExit("base reconstruction mismatch")
+          out=build(newrd)
+          if len(out)>33554432: raise SystemExit("final image exceeds 32 MiB")
+          outp.write_bytes(out)
+          Path("work/final-kernel.bin").write_bytes(k)
+          Path("work/final-dtbo.bin").write_bytes(dt)
+          PY
+
+          OUT="dist/twrp-3.5.2_10-0-channel-RecoveryConsole-DroidSpaces-WiFi-${{ matrix.orientation }}.img"
+          test -s "$OUT"
+          [ "$(head -c 8 "$OUT")" = "ANDROID!" ]
+          cmp -s work/final-kernel.bin base-artifact/build/arch/arm64/boot/Image.gz-dtb || { echo "ERROR: kernel changed" >&2; exit 1; }
+          cmp -s work/final-dtbo.bin base-artifact/official-recovery-dtbo.bin || { echo "ERROR: recovery_dtbo changed" >&2; exit 1; }
+
+          cp console-src/output/recovery-console-aarch64 "dist/recovery-console-channel-aarch64-${{ matrix.orientation }}"
+          cp work/final-ramdisk.bin "dist/ramdisk-channel-recovery-console-${{ matrix.orientation }}.bin"
+          sha256sum "$OUT" > "$OUT.sha256"
+          sha256sum "dist/recovery-console-channel-aarch64-${{ matrix.orientation }}" > "dist/recovery-console-channel-aarch64-${{ matrix.orientation }}.sha256"
+
+          cat > "dist/BUILD-INFO-${{ matrix.orientation }}.txt" <<EOF
+          Device: Motorola Moto G7 Play (channel)
+          Branch: channel-twrp-dp-wifi-hp
+          Source profile: channel-binary
+          Artifact type: recovery-as-boot boot.img
+          TWRP base: twrp-$CHANNEL_TWRP_VERSION-channel.img
+          TWRP image SHA-256: $CHANNEL_TWRP_IMG_SHA256
+          Kernel source: TeamWin/android_kernel_motorola_sdm632
+          Kernel ref: $TEAMWIN_KERNEL_REF (twrp-10.0)
+          Kernel config: official TWRP $CHANNEL_TWRP_VERSION embedded config
+          DroidSpaces config commit: $DROIDSPACES_CONFIG_COMMIT
+          DroidSpaces firewall commit: $DROIDSPACES_FIREWALL_COMMIT
+          DroidSpaces paranoid commit: $DROIDSPACES_PARANOID_COMMIT
+          DroidSpaces cgroup noprefix commit: $DROIDSPACES_CGROUP_COMMIT
+          KernelSU/ReSukiSU: not added
+          Orientation: ${{ matrix.orientation }}
+          ROTATION=${{ matrix.rotation }}
+          Console path: /system/bin/recovery-console
+          Integration: upstream Channel permanent init.rc method
+          Stock recovery service: disabled
+          Recovery Console autostart: YES
+          Console exit fallback: start recovery
+          Kernel changed by console integration: NO
+          Recovery DTBO changed by console integration: NO
+          Intended dedicated slot: boot_b
+          EOF
+
+      - name: Upload Channel DroidSpaces Recovery Console
+        uses: actions/upload-artifact@v4
+        with:
+          name: channel-droidspaces-recovery-console-${{ matrix.orientation }}
+          path: |
+            dist/*.img
+            dist/*.img.sha256
+            dist/recovery-console-channel-aarch64-*
+            dist/recovery-console-channel-aarch64-*.sha256
+            dist/ramdisk-channel-recovery-console-*.bin
+            dist/BUILD-INFO-*.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload individual files to GoFile
+        shell: bash
+        env:
+          GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN }}
+          GOFILE_FOLDER_ID: ${{ secrets.GOFILE_FOLDER_ID || vars.GOFILE_FOLDER_ID }}
+          GOFILE_SOURCE: dist
+        run: |
+          set -euo pipefail
+          if [ -z "${GOFILE_TOKEN:-}" ]; then
+            echo "::warning::GOFILE_TOKEN repository secret is not configured; skipping GoFile upload."
+            exit 0
+          fi
+          test -d "$GOFILE_SOURCE"
+          server_json="$(curl --silent --show-error --fail-with-body --retry 5 --retry-delay 3 --retry-all-errors https://api.gofile.io/servers)"
+          upload_server="$(printf '%s' "$server_json" | python3 -c 'import json,sys; j=json.load(sys.stdin); s=(j.get("data") or {}).get("servers") or []; print((s[0] or {}).get("name","") if s else "")')"
+          test -n "$upload_server" || { echo "::error::GoFile returned no upload server"; exit 1; }
+          upload_url="https://$upload_server.gofile.io/contents/uploadfile"
+          folder_id="${GOFILE_FOLDER_ID:-}"
+          folder_page=""
+          uploaded=0
+          summary="$RUNNER_TEMP/gofile-files.md"
+          : > "$summary"
+          while IFS= read -r -d '' file; do
+            args=(--silent --show-error --fail-with-body --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 --max-time 600
+              -H "Authorization: Bearer $GOFILE_TOKEN"
+              -F "file=@$file")
+            if [ -n "$folder_id" ]; then
+              args+=(-F "folderId=$folder_id")
+            fi
+            response="$(curl "${args[@]}" "$upload_url")"
+            mapfile -t meta < <(printf '%s' "$response" | python3 -c 'import json,sys; j=json.load(sys.stdin); d=j.get("data") or {}; print(j.get("status","")); print(d.get("parentFolder") or d.get("folderId") or ""); print(d.get("downloadPage","")); print(d.get("parentFolderCode") or d.get("folderCode") or "")')
+            status="${meta[0]:-}"
+            parent="${meta[1]:-}"
+            page="${meta[2]:-}"
+            parent_code="${meta[3]:-}"
+            if [ "$status" != "ok" ]; then
+              echo "::error::GoFile rejected $(basename "$file")"
+              printf '%s\n' "$response" >&2
+              exit 1
+            fi
+            if [ -z "$folder_id" ]; then folder_id="$parent"; fi
+            if [ -z "$folder_page" ] && [ -n "$parent_code" ]; then folder_page="https://gofile.io/d/$parent_code"; fi
+            name="$(basename "$file")"
+            if [ -n "$page" ]; then
+              printf -- '- [%s](%s)\n' "$name" "$page" >> "$summary"
+            else
+              printf -- '- %s\n' "$name" >> "$summary"
+            fi
+            uploaded=$((uploaded + 1))
+          done < <(find "$GOFILE_SOURCE" -type f -print0 | sort -z)
+          if [ "$uploaded" -eq 0 ]; then
+            echo "::error::No files found in $GOFILE_SOURCE for GoFile upload"
+            exit 1
+          fi
+          {
+            echo "### GoFile — $uploaded individual files"
+            [ -z "$folder_page" ] || echo "Folder: $folder_page"
+            echo
+            cat "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
