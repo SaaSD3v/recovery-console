@@ -8,5 +8,5 @@ permissions:
 
 jobs:
   build:
-    uses: SaaSD3v/recovery-console/.github/workflows/recovery-image-builder.yml@albus-image-dp
+    uses: SaaSD3v/recovery-console/.github/workflows/albus-image-dp.yml@albus-image-dp
     secrets: inherit
