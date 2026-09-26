@@ -13,6 +13,7 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    environment: "gofile keys"
     strategy:
       fail-fast: false
       matrix:
