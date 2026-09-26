@@ -1,14 +1,7 @@
-name: Albus Recovery Image Builder
+name: Albus Image DP
 
 on:
-  push:
-    branches: ["Albus-Recovery-Image-Builder"]
-    paths:
-      - "builder/REQUEST.env"
-      - "builder/integrate-recovery.sh"
-      - "builder/set-albus-rotation.py"
-      - "builder/build-freetype.sh"
-      - ".github/workflows/recovery-image-builder.yml"
+  workflow_call:
 
 permissions:
   contents: read
@@ -32,6 +25,8 @@ jobs:
       source_ref: ${{ steps.cfg.outputs.source_ref }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: albus-image-dp
 
       - name: Resolve request
         id: cfg
@@ -43,11 +38,11 @@ jobs:
           source builder/REQUEST.env
           set +a
 
-          : "${SOURCE_REF:=Albus-Configs}"
+          : "${SOURCE_REF:=albus-binary}"
           : "${ORIENTATION:=all}"
 
-          [ "$SOURCE_REF" = "Albus-Configs" ] || {
-            echo "ERROR: Albus recovery builder only accepts SOURCE_REF=Albus-Configs" >&2
+          [ "$SOURCE_REF" = "albus-binary" ] || {
+            echo "ERROR: Albus recovery builder only accepts SOURCE_REF=albus-binary" >&2
             exit 1
           }
 
@@ -152,7 +147,7 @@ jobs:
       - name: Checkout Albus recovery builder
         uses: actions/checkout@v4
         with:
-          ref: Albus-Recovery-Image-Builder
+          ref: albus-image-dp
           path: builder-tools
 
       - name: Checkout Albus binary profile
@@ -274,8 +269,8 @@ jobs:
           cp base-artifact/albus-base/artifacts/build-info.txt dist/KNOWN-GOOD-BASE.txt
           cat > "dist/BUILD-INFO-${{ matrix.orientation }}.txt" <<EOF
           Device: Motorola Moto Z2 Play (albus)
-          Branch: Albus-Recovery-Image-Builder
-          Source profile: Albus-Configs
+          Branch: albus-image-dp
+          Source profile: albus-binary
           Artifact type: recovery.img
           Known-good builder snapshot: $ALBUS_BASE_BUILDER_COMMIT
           Kernel commit: $ALBUS_KERNEL_COMMIT
