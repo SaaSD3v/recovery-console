@@ -8,5 +8,5 @@ permissions:
 
 jobs:
   build:
-    uses: SaaSD3v/recovery-console/.github/workflows/recovery-image-builder.yml@channel-twrp-dp-wifi-hp
+    uses: SaaSD3v/recovery-console/.github/workflows/channel-twrp-dp-wifi-hp.yml@channel-twrp-dp-wifi-hp
     secrets: inherit
