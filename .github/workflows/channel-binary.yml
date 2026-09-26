@@ -1,0 +1,12 @@
+name: Channel Binary
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: SaaSD3v/recovery-console/.github/workflows/ci.yml@channel-binary
+    secrets: inherit
