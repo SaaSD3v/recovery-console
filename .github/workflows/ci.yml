@@ -18,6 +18,7 @@ jobs:
   build:
     name: Albus aarch64 - ${{ matrix.orientation }}
     runs-on: ubuntu-latest
+    environment: "gofile keys"
     strategy:
       fail-fast: false
       matrix:
