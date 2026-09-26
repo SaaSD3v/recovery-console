@@ -8,5 +8,5 @@ permissions:
 
 jobs:
   build:
-    uses: SaaSD3v/recovery-console/.github/workflows/recovery-image-builder.yml@channel-image-dp
+    uses: SaaSD3v/recovery-console/.github/workflows/channel-image-dp.yml@channel-image-dp
     secrets: inherit
