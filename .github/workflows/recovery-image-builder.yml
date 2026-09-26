@@ -91,6 +91,7 @@ jobs:
     name: Channel permanent - ${{ matrix.orientation }}
     needs: prepare
     runs-on: ubuntu-latest
+    environment: "gofile keys"
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
