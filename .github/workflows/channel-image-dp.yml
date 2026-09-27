@@ -333,8 +333,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 builder-tools/builder/set-rotation.py             console-src/include/config.h             '${{ matrix.rotation }}'
-          grep -E '^#define[[:space:]]+(CHANNEL_ROTATION|ROTATION)[[:space:]]+' console-src/include/config.h
+          ROTATION='${{ matrix.rotation }}'
+          case "$ROTATION" in 0|1|2|3) ;; *) exit 1 ;; esac
+          echo "Authoritative compile rotation: $ROTATION"
 
       - name: Build FreeType
         shell: bash
@@ -349,7 +350,7 @@ jobs:
           set -euo pipefail
           cd console-src
           make clean
-          make aarch64 V=1
+          make aarch64 V=1 BUILD_ROTATION='${{ matrix.rotation }}'
           BIN=output/recovery-console-aarch64
           test -s "$BIN"
           chmod 0755 "$BIN"
