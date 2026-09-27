@@ -35,9 +35,8 @@ jobs:
       - name: Select Channel rotation
         run: |
           set -euxo pipefail
-          ROTATION='${{ matrix.rotation }}'
-          case "$ROTATION" in 0|1|2|3) ;; *) exit 1 ;; esac
-          echo "Authoritative compile rotation: $ROTATION"
+          sed -i "s/^#define CHANNEL_ROTATION 0$/#define CHANNEL_ROTATION ${{ matrix.rotation }}/" include/config.h
+          grep -E '^#define (CHANNEL_ROTATION|ROTATION)' include/config.h
 
       - name: Install dependencies
         run: |
@@ -60,7 +59,7 @@ jobs:
         run: |
           set -euxo pipefail
           make clean
-          make aarch64 V=1 BUILD_ROTATION='${{ matrix.rotation }}'
+          make aarch64 V=1
           BIN=output/recovery-console-aarch64
           test -s "$BIN"
           file "$BIN"
