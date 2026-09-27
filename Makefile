@@ -27,6 +27,16 @@ CFLAGS += $(FT_CFLAGS)
 # Real-time optimisations: no function descriptor indirection, tighter code.
 CFLAGS += -fno-plt -ffunction-sections -fdata-sections
 
+# Optional authoritative compile-time display rotation.
+# CI passes BUILD_ROTATION=0..3 so artifact names cannot diverge from
+# the rotation actually compiled into the binary.
+ifneq ($(origin BUILD_ROTATION), undefined)
+  ifeq ($(filter $(BUILD_ROTATION),0 1 2 3),)
+    $(error BUILD_ROTATION must be one of: 0 1 2 3)
+  endif
+  CFLAGS += -DCHANNEL_ROTATION=$(BUILD_ROTATION)
+endif
+
 # ── Link flags ───────────────────────────────────────────────────────────
 # -lutil: needed by glibc for forkpty().  musl includes forkpty in libc.a
 # so we detect the C library and omit -lutil when building with musl.
