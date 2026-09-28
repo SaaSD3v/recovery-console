@@ -585,8 +585,44 @@ bool display_init(DisplayDev *d) {
     /* Fall back to fbdev. */
     ensure_node(FB_DEVICE, FB_MAJOR, FB_MINOR);
     if (!fbdev_init(d)) {
-      font_free();
-      return false;
+      /*
+       * Headless recovery fallback.
+       *
+       * CLI-minimal kernels intentionally omit physical DRM/fbdev display
+       * plumbing. Keep the font metrics and provide a synthetic terminal
+       * geometry so the PTY/socket/replay path remains fully functional.
+       * g_fb stays NULL, therefore display_render() is already a no-op.
+       * fbdev_blank()/fbdev_kick() also tolerate fd < 0.
+       */
+      const int headless_cols = 120;
+      const int headless_rows = 40;
+      int logical_w =
+          headless_cols * d->cell_w + MARGIN_LEFT + MARGIN_RIGHT;
+      int logical_h =
+          headless_rows * d->cell_h + MARGIN_TOP + MARGIN_BOTTOM;
+
+      d->fd = -1;
+      d->is_drm = false;
+      d->buf.map = NULL;
+      d->buf.pitch = 0;
+      d->buf.size = 0;
+
+      if (ROTATION % 2 == 1) {
+        d->width = logical_h;
+        d->height = logical_w;
+      } else {
+        d->width = logical_w;
+        d->height = logical_h;
+      }
+
+      g_stride = 0;
+      g_fb = NULL;
+      g_fb_w = d->width;
+      g_fb_h = d->height;
+
+      LOG("no DRM/fbdev; headless PTY/socket mode (%dx%d cells)",
+          headless_cols, headless_rows);
+      return true;
     }
     d->is_drm = false;
     backlight_wake();
