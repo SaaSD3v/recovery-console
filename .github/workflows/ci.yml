@@ -1,7 +1,10 @@
-name: Channel Binary
+name: Channel Binary Headless
 
 on:
   workflow_call:
+  push:
+    branches:
+      - channel-binary-headless
 
 permissions:
   contents: read
@@ -30,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: channel-binary
+          ref: channel-binary-headless
 
       - name: Select Channel rotation
         run: |
@@ -78,12 +81,12 @@ jobs:
           cp output/recovery-console-aarch64 "package/$NAME"
           cat > package/BUILD-INFO.txt <<EOF
           Device: Motorola Moto G7 Play (channel)
-          Branch: channel-binary
+          Branch: channel-binary-headless
           Artifact type: standalone Recovery Console binary
           Architecture: aarch64
-          Backend: Qualcomm MDSS FBDEV
-          Framebuffer: /dev/graphics/fb0
-          Physical display: 720x1512
+          Backend: auto DRM/FBDEV with headless PTY/socket fallback
+          Framebuffer: optional
+          Physical display: optional; headless fallback 120x40 terminal
           Rotation: ${{ matrix.rotation }}
           Orientation: ${{ matrix.orientation }}
           Recovery image included: NO
